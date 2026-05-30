@@ -1,0 +1,24 @@
+# Local state
+.skill-lock.json
+
+# System-installed skills (auto-managed by platform)
+skills/.system/
+
+# Environment files
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
