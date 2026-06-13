@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kaggle Notebooks"
+  short_description: "Browse and download Kaggle notebooks as clean Python scripts"
+  default_prompt: "Fetch Kaggle competition notebooks, convert them to Python scripts, and optionally download output and logs"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architect Loop"
+  short_description: "Run judged multi-lane Codex build loops"
+  default_prompt: "Use $architect-loop to plan, dispatch, and judge the next slice of this repository."

@@ -11,18 +11,53 @@ Oracle bundles your prompt + selected files into one request so another model ca
 
 Oracle is installed globally (`oracle` CLI, v0.13.0). Requires Node 24+ (default via nvm).
 
-## Browser Mode Setup (one-time, macOS)
+## Browser Mode Setup
 
-Browser mode uses `--browser-manual-login` to avoid macOS Keychain cookie
-permission prompts and keep a persistent login across runs.  Run this ONCE to
-create the automation profile and log into ChatGPT:
+Browser mode authenticates via your existing Chrome login session. The primary
+method reads Chrome's cookie database directly — no separate login needed, as
+long as you've signed into ChatGPT in Chrome at least once.
+
+**Primary: Chrome cookie database** (recommended — most reliable)
+
+```bash
+# Close Chrome first — the cookie DB is locked while Chrome is running.
+# Then clear any stale cookie-file env var and run:
+unset ORACLE_BROWSER_COOKIES_FILE
+oracle --engine browser \
+  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+  --browser-cookie-wait 10s \
+  -p "Quick auth test. Reply with OK."
+```
+
+Only proceed with a large Oracle run after the quick auth test returns `OK`.
+
+**Alternative: attach to running Chrome** (when Chrome is already open & logged in)
+
+Start Chrome with remote debugging enabled:
+
+```bash
+# Quit Chrome, then relaunch:
+open -a "Google Chrome" --args --remote-debugging-port=9222
+```
+
+Then use `--browser-attach-running` to reuse that session:
+
+```bash
+oracle --engine browser --browser-attach-running \
+  -p "Quick auth test. Reply with OK."
+```
+
+**Fallback: manual-login profile** (when cookie DB and attach both fail)
+
+Creates a separate Chrome profile for oracle. Run this ONCE to set up:
 
 ```bash
 oracle --engine browser --browser-manual-login --browser-keep-browser \
   --browser-input-timeout 120000 -p "HI"
 ```
 
-After this initial login, all subsequent browser runs work without re-login.
+After setup, all subsequent `--browser-manual-login` runs reuse that profile.
+If the profile goes stale (logged out), re-run the setup command above.
 
 ## Quick Commands
 
@@ -36,15 +71,32 @@ oracle --dry-run summary -p "<task>" --file "src/**" --file "!**/*.test.*"
 # Token/cost sanity check
 oracle --dry-run summary --files-report -p "<task>" --file "src/**"
 
-# Browser run (main path; no API key needed)
-# --browser-manual-login required per our setup; auto-reattach for long Pro runs
+# Browser run — cookie DB (primary; close Chrome first)
+unset ORACLE_BROWSER_COOKIES_FILE
+oracle --engine browser \
+  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+  --browser-cookie-wait 10s \
+  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
+  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
+  --model gpt-5.5-pro -p "<task>" --file "src/**"
+
+# Browser run — attach to running Chrome (when already open with --remote-debugging-port=9222)
+oracle --engine browser --browser-attach-running \
+  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
+  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
+  --model gpt-5.5-pro -p "<task>" --file "src/**"
+
+# Browser run — manual-login fallback (when cookie DB and attach both fail)
 oracle --engine browser --browser-manual-login \
   --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
   --browser-auto-reattach-timeout 2m --browser-timeout 20m \
   --model gpt-5.5-pro -p "<task>" --file "src/**"
 
-# Browser run with output file
-oracle --engine browser --browser-manual-login \
+# Browser run with output file (cookie DB variant)
+unset ORACLE_BROWSER_COOKIES_FILE
+oracle --engine browser \
+  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+  --browser-cookie-wait 10s \
   --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
   --browser-auto-reattach-timeout 2m --browser-timeout 20m \
   --model gpt-5.5-pro -p "<task>" --file "src/**" \
@@ -54,9 +106,13 @@ oracle --engine browser --browser-manual-login \
 oracle --render --copy -p "<task>" --file "src/**"
 
 # ChatGPT Project Sources (persistent shared context)
-oracle project-sources list --browser-manual-login \
+oracle project-sources list \
+  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+  --browser-cookie-wait 10s \
   --chatgpt-url "https://chatgpt.com/g/g-p-.../project"
-oracle project-sources add --browser-manual-login --dry-run \
+oracle project-sources add --dry-run \
+  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+  --browser-cookie-wait 10s \
   --chatgpt-url "https://chatgpt.com/g/g-p-.../project" \
   --file AGENTS.md --file README.md --file docs/architecture.md
 
@@ -71,8 +127,26 @@ oracle restart <id>
 
 ### Important Browser Run Notes
 
-- Always use `--browser-manual-login` — this repo's setup uses the persistent
-  manual-login profile, not Keychain cookies.
+- **Primary auth: Chrome cookie DB.** Close Chrome before running — the cookie
+  database is locked while Chrome is open. Oracle will fail to read cookies if
+  Chrome is running. Always clear `ORACLE_BROWSER_COOKIES_FILE` (unset it)
+  before using `--browser-cookie-path`; the env var can conflict with explicit
+  cookie flags and cause misleading failures.
+- **Alternative: attach to running Chrome.** Start Chrome with
+  `--remote-debugging-port=9222`, then use `--browser-attach-running`. This
+  reuses your live, logged-in session. No cookie DB reads needed.
+- **Fallback: manual-login profile.** Use `--browser-manual-login` when both
+  cookie DB and attach-running fail. This uses a separate Chrome profile that
+  requires a one-time manual ChatGPT login. If the profile goes stale, re-run
+  the setup: `oracle --engine browser --browser-manual-login --browser-keep-browser
+  --browser-input-timeout 120000 -p "HI"`.
+- Treat `--browser-cookie-path`, `--browser-chrome-profile`, and
+  `--browser-manual-login` as separate auth paths. One can be logged in while
+  another fails. Never mix them in a single command.
+- **Always auth-probe first.** Before any substantial browser-mode run, execute
+  a tiny auth test: `-p "Quick auth test. Reply with OK."`. Only proceed with
+  the full prompt after it returns `OK`. This saves you from waiting 10-20
+  minutes only to discover a login failure.
 - Before a substantial browser-mode consult, try to identify a ChatGPT Project
   for the current directory and use it as shared context. Check, in order:
   the user prompt, directory-local docs/config (`AGENTS.md`, `README*`, `docs/**`,
@@ -100,6 +174,66 @@ oracle restart <id>
 - If a run times out, do NOT re-run; reattach with `oracle session <id> --render`.
 - Use `--force` if Oracle warns about a duplicate prompt (different context is fine).
 - API mode is NOT used in this repo (user preference).
+
+### Browser Auth Troubleshooting
+
+**Cookie DB failures (most common)**
+
+- **Chrome is running → cookie DB locked.**
+  Symptom: oracle hangs or fails with an empty/inaccessible cookie DB.
+  Fix: quit Chrome completely (`Cmd+Q`), then re-run. The cookie DB is
+  exclusively locked while Chrome is open.
+- **`ORACLE_BROWSER_COOKIES_FILE` env var set → conflicts with explicit flags.**
+  Symptom: `--browser-cookie-path` appears ignored; oracle launches a fresh
+  unauthenticated Chrome.
+  Fix: `unset ORACLE_BROWSER_COOKIES_FILE` before the command. This env var
+  shadows explicit `--browser-cookie-path` and can cause confusing failures.
+- **Wrong cookie DB path.**
+  Symptom: oracle reports no cookies found, or launches unauthenticated.
+  Fix: verify the path — on macOS it's
+  `"$HOME/Library/Application Support/Google/Chrome/Default/Cookies"`. For
+  non-Default profiles, replace `Default` with the profile directory name
+  (e.g. `Profile 1`). Use `--browser-cookie-wait 10s` to handle transient
+  locks from background Chrome processes.
+- **Cookies expired or signed out.**
+  Symptom: auth probe returns a login wall instead of `OK`.
+  Fix: open Chrome normally, sign into ChatGPT, close Chrome, then retry
+  with cookie DB. If the session was expired, a fresh login is needed.
+
+**Attach-running failures**
+
+- **Chrome not started with remote debugging.**
+  Symptom: `--browser-attach-running` can't connect.
+  Fix: quit Chrome, relaunch with `open -a "Google Chrome" --args
+  --remote-debugging-port=9222`, verify with `curl http://127.0.0.1:9222/json`.
+- **Wrong port.**
+  Symptom: connection refused on 9222.
+  Fix: check the port Chrome is using. Oracle defaults to 9222; override with
+  `--remote-chrome 127.0.0.1:<port>`.
+
+**Manual-login failures**
+
+- **Profile logged out / stale.**
+  Symptom: Chrome opens but ChatGPT shows a login screen.
+  Fix: re-run the one-time setup:
+  `oracle --engine browser --browser-manual-login --browser-keep-browser --browser-input-timeout 120000 -p "HI"`.
+  Log in manually in the opened window, then let the command complete.
+- **`setTypeOfService EINVAL`.**
+  Symptom: macOS Keychain permission prompt blocked.
+  Fix: switch to cookie DB auth (close Chrome, unset
+  `ORACLE_BROWSER_COOKIES_FILE`, use `--browser-cookie-path`). This error
+  is specific to Keychain-based cookie access and does not occur with
+  explicit cookie DB paths.
+
+**General**
+
+- **Mixing auth flags.** Don't combine `--browser-manual-login` with
+  `--browser-cookie-path` or `--browser-attach-running`. Pick one auth
+  path per command. Conflicting flags produce unpredictable results.
+- **Project sources auth mismatch.** Project sources commands (list/add)
+  use the same auth flags as runs. If `project-sources list` works but a
+  full run fails, the auth flags likely differ between the two commands —
+  copy the exact flags that worked.
 
 ## Attaching Files (`--file`)
 
@@ -145,7 +279,9 @@ Oracle chats grouped.
    ```
 2. If a Project URL exists, verify it:
    ```bash
-   oracle project-sources list --browser-manual-login \
+   oracle project-sources list \
+     --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+     --browser-cookie-wait 10s \
      --chatgpt-url "<project-url>"
    ```
 3. If no Project URL exists, create a ChatGPT Project for that directory in the
@@ -156,7 +292,7 @@ Oracle chats grouped.
      "engine": "browser",
      "browser": {
        "chatgptUrl": "https://chatgpt.com/g/g-p-.../project",
-       "inlineCookiesFile": "~/.oracle/cookies.json"
+       "cookiePath": "/Users/abf/Library/Application Support/Google/Chrome/Default/Cookies"
      }
    }
    ```
@@ -166,7 +302,9 @@ Oracle chats grouped.
    commands, API/schema docs, benchmark/evaluation specs, and core domain notes.
 5. Preview uploads:
    ```bash
-   oracle project-sources add --browser-manual-login --dry-run \
+   oracle project-sources add --dry-run \
+     --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
+     --browser-cookie-wait 10s \
      --chatgpt-url "<project-url>" \
      --file AGENTS.md --file README.md --file docs/architecture.md
    ```
