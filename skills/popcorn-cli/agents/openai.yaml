@@ -1,0 +1,4 @@
+interface:
+  display_name: "Popcorn CLI"
+  short_description: "Submit kernels to GPU Mode leaderboards"
+  default_prompt: "Use the popcorn CLI workflow to submit CUDA/HIP kernels to GPU Mode leaderboards"
