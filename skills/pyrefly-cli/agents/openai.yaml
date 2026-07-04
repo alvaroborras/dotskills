@@ -1,0 +1,4 @@
+interface:
+  display_name: "PyRefly CLI"
+  short_description: "Run PyRefly type checks from the CLI"
+  default_prompt: "Use $pyrefly-cli to type-check my Python changes with PyRefly."

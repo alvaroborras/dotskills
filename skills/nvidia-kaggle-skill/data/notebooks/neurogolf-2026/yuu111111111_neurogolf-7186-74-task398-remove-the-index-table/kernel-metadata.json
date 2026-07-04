@@ -1,0 +1,13 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "neurogolf-7186-74-task398-remove-the-index-table",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [],
+  "modelDataSources": [],
+  "datasetDataSources": [],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

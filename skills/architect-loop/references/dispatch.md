@@ -14,7 +14,7 @@ If the CLI version or environment is new, run one canary `codex exec` before
 parallel fan-out. Pin the model explicitly:
 
 ```bash
--m gpt-5.5 -c model_reasoning_effort="high"
+-m gpt-5.5 -c model_reasoning_effort="medium"
 ```
 
 Write prompt blocks to files and pass them through stdin (`-`). Do not pass a
@@ -25,10 +25,24 @@ large block as a shell argument.
 ```bash
 mkdir -p .architect docs/lanes docs/gates
 codex exec -C <repo-root> --sandbox workspace-write \
-  -m gpt-5.5 -c model_reasoning_effort="high" \
+  -m gpt-5.5 -c model_reasoning_effort="medium" \
   --json -o .architect/last-run.jsonl \
   - < .architect/dispatch-block.md
 ```
+
+### Single-Lane Dispatch (opencode subagent)
+
+When Codex CLI is unavailable, use the subagent tool:
+
+```
+subagent:
+  agent: (default or configured agent)
+  description: "Build slice <slice-name>"
+  prompt: <contents of .architect/dispatch-block.md>
+```
+
+The subagent runs in a fresh context. Set thinking level via agent config or
+session settings — medium is the default for builders.
 
 ## Worktree Fan-Out
 
@@ -39,7 +53,7 @@ git -C <repo-root> worktree add .architect/wt/<slice>-<NN> \
   -b lane/<slice>-<NN> <freeze-sha>
 
 codex exec -C <repo-root>/.architect/wt/<slice>-<NN> --sandbox workspace-write \
-  -m gpt-5.5 -c model_reasoning_effort="high" \
+  -m gpt-5.5 -c model_reasoning_effort="medium" \
   --json -o .architect/wt/<slice>-<NN>.last-run.jsonl \
   - < .architect/wt/<slice>-<NN>.block.md
 ```
@@ -56,6 +70,19 @@ codex exec resume --last "<rulings or clarification, then proceed>"
 ```
 
 Never resume across slices.
+
+## Thinking-Level Overrides
+
+Default: medium for all dispatched work. Override in the slice spec when
+justified:
+
+- **Correctness-critical** (security, data integrity, schema evolution):
+  raise to high.
+- **Research for unfamiliar APIs**: raise to high if the API surface is
+  ambiguous or poorly documented.
+- **Never raise beyond high** — xhigh is reserved for the architect.
+
+Record the override and reason in the slice spec's Effort call field.
 
 ## Stall Detection
 

@@ -1,0 +1,13 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "neurogolf-7186-61-github-com-qurore-kaggloop",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [],
+  "modelDataSources": [],
+  "datasetDataSources": [],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

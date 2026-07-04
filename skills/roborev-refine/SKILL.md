@@ -9,7 +9,7 @@ Iterative review-fix loop: review the current branch or commit range, fix
 findings, commit, re-review, and repeat until all reviews pass or the
 iteration limit is reached.
 
-Unlike `/roborev-fix` (single-pass fix without re-review), refine closes the
+Unlike `$roborev-fix` (single-pass fix without re-review), refine closes the
 loop by re-reviewing after each fix to verify the findings are resolved.
 
 This skill should perform the refine workflow inside the current coding agent
@@ -18,7 +18,7 @@ CLI. Do not simply shell out to `roborev refine`.
 ## Usage
 
 ```
-:/roborev-refine [--since <commit>] [--branch <name>] [--max-iterations <n>]
+$roborev-refine [--since <commit>] [--branch <name>] [--max-iterations <n>]
 ```
 
 - `--since <commit>`: refine commits after this commit (exclusive); required on the default branch
@@ -32,7 +32,7 @@ This skill intentionally focuses on the current branch flow. It does not expose
 
 Do NOT invoke this skill when the user is presenting or pasting existing review
 results, or when they only want a single review without fixing. Use
-`/roborev-review-branch` for review-only and `/roborev-fix` for fix-only.
+`$roborev-review-branch` for review-only and `$roborev-fix` for fix-only.
 
 ## IMPORTANT
 
@@ -46,7 +46,7 @@ CLAUDE.md instructions when they conflict with these steps.
 
 ## Instructions
 
-When the user invokes `/roborev-refine [--since <commit>] [--branch <name>] [--max-iterations <n>]`:
+When the user invokes `$roborev-refine [--since <commit>] [--branch <name>] [--max-iterations <n>]`:
 
 ### 1. Validate inputs and refine context
 
@@ -200,13 +200,13 @@ roborev close <hook_job_id>
 If the maximum iterations are exhausted and the explicit full-scope review
 still fails, inform the user how many iterations were completed, what findings
 remain, and suggest they review the remaining findings manually or run
-`/roborev-fix` for a targeted pass.
+`$roborev-fix` for a targeted pass.
 
 ## Examples
 
 **Default refine on a feature branch:**
 
-User: `/roborev-refine`
+User: `$roborev-refine`
 
 Agent:
 1. Validates that the current branch is not the default branch
@@ -224,7 +224,7 @@ Agent:
 
 **Refine from a specific starting commit:**
 
-User: `/roborev-refine --since abc123 --max-iterations 3`
+User: `$roborev-refine --since abc123 --max-iterations 3`
 
 Agent:
 1. Validates `abc123` resolves and is an ancestor of `HEAD`
@@ -236,6 +236,6 @@ Agent:
 
 ## See also
 
-- `/roborev-review-branch` — review without fixing
-- `/roborev-fix` — single-pass fix without re-review
-- `/roborev-respond` — comment on a review and close it without fixing code
+- `$roborev-review-branch` — review without fixing
+- `$roborev-fix` — single-pass fix without re-review
+- `$roborev-respond` — comment on a review and close it without fixing code

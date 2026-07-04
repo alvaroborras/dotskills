@@ -1,0 +1,13 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "neurogolf-stack-audit-variant-v51-7179-45",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [],
+  "modelDataSources": [],
+  "datasetDataSources": [],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Kaggle Discussions"
-  short_description: "Scrape Kaggle competition forum discussions"
-  default_prompt: "Fetch all discussion threads for this Kaggle competition and save them as Markdown files with author attribution"

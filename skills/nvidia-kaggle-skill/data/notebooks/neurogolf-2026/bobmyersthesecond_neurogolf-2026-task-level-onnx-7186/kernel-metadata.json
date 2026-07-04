@@ -1,0 +1,15 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "neurogolf-2026-task-level-onnx-7186",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [],
+  "modelDataSources": [],
+  "datasetDataSources": [
+    "bobmyersthesecond/neurogolf-2026-task-nets-7186"
+  ],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

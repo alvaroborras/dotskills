@@ -1,0 +1,15 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "audited-neurogolf-onnx-overrides",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [],
+  "modelDataSources": [],
+  "datasetDataSources": [
+    "kojimar/neurogolf-7169-36-minimal-onnx-assets-v1"
+  ],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

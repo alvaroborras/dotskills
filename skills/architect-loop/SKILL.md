@@ -1,6 +1,6 @@
 ---
 name: architect-loop
-description: "Run the Architect Loop in Codex: use Codex as the architect/judge and GPT-5.5 high `codex exec` workers as builders in isolated git worktrees. Use when the user asks to architect, run the loop, dispatch builders, judge builder work, create the next slice, split work into lanes, perform gated multi-agent implementation, or resume a repo that uses docs/HANDOFF.md, docs/gates/, and docs/lanes/."
+description: "Run the Architect Loop in Codex: use Codex as the architect/judge at xhigh reasoning, dispatch medium-reasoning `codex exec` or subagent workers as builders in isolated git worktrees. Use when the user asks to architect, run the loop, dispatch builders, judge builder work, create the next slice, split work into lanes, perform gated multi-agent implementation, or resume a repo that uses docs/HANDOFF.md, docs/gates/, and docs/lanes/."
 ---
 
 # Architect Loop
@@ -11,8 +11,20 @@ directly.
 
 Codex in the current session is the ARCHITECT: arbitrate, freeze gates, dispatch
 builders, verify raw evidence, integrate, and make kill/continue calls. Builder
-lanes are fresh `codex exec` processes pinned to GPT-5.5 with high reasoning.
-The repo is the durable memory.
+lanes are fresh `codex exec` or subagent processes pinned to GPT-5.5 with
+medium reasoning. The repo is the durable memory.
+
+## Thinking Levels
+
+| Role | Effort | When to change |
+|------|--------|---------------|
+| Architect (orchestrate, spec, judge) | xhigh | Never — this is the current session |
+| Builder (implement, debug, test) | medium | Raise to high only for correctness-critical slices (security, data integrity, schema evolution) |
+| Researcher (web research, API lookup) | medium | Raise to high only for ambiguous or poorly-documented APIs |
+| Task monitor (status checks) | medium | Never |
+
+Dispatch commands in `references/dispatch.md` use these levels. Override
+per-slice in the spec when the risk justifies the extra tokens.
 
 Detailed mechanics live in:
 
@@ -51,6 +63,13 @@ Detailed mechanics live in:
 
 Read project instructions in authority order: `AGENTS.md`, `README.md`, then
 architecture docs and CI config. Learn exact verification commands.
+
+This skill supports two execution modes. Choose based on your environment:
+
+- **codex exec**: Full worktree isolation, `--json` output, stall detection.
+  Use when Codex CLI is available.
+- **opencode subagent**: Spawn via the subagent tool with a prompt block.
+  Use when Codex CLI is unavailable or for simpler single-lane work.
 
 Run `codex --version` once per environment. For a new CLI/version, do one
 canary `codex exec` before fanning out.
@@ -102,8 +121,9 @@ Make the slice one PR-sized unit. The spec must be self-contained:
   slices are one lane.
 - Gates: exact commands and thresholds in `docs/gates/<slice>.md`, committed
   before dispatch.
-- Effort call: default builders to GPT-5.5 high. Use another effort only when
-  explicitly requested by the human and recorded in the spec.
+- Effort call: default builders to GPT-5.5 medium. Raise to high only when
+  the slice involves security, data integrity, or schema evolution — record
+  the override and reason in the spec.
 
 ### 5. Dispatch Builders
 
@@ -115,11 +135,15 @@ worktree per lane off the freeze commit, then launch all lane builders in
 parallel. Builders write raw results to `docs/lanes/<slice>-<lane>.md` and do
 not commit.
 
-Use this model pin unless the user explicitly changes it:
+Use this model pin unless the slice spec overrides it:
 
 ```bash
--m gpt-5.5 -c model_reasoning_effort="high"
+-m gpt-5.5 -c model_reasoning_effort="medium"
 ```
+
+For opencode subagent dispatch, use the subagent tool with the dispatch block
+as the prompt — no model pin needed; set thinking level via agent config or
+session settings.
 
 ### 6. Post-Flight And Integrate
 

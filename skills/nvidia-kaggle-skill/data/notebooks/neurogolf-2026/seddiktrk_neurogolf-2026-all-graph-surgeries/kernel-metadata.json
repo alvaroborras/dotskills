@@ -1,0 +1,20 @@
+{
+  "id": null,
+  "id_no": null,
+  "slug": "neurogolf-2026-all-graph-surgeries",
+  "kernel_type": "notebook",
+  "language": "python",
+  "kernelDataSources": [
+    "seddiktrk/neurogolf-2026-utils",
+    "ryosukeshiroshita/neurogolf-7186-61-github-com-qurore-kaggloop",
+    "biohack44/neurogolf-new-best-public-attack",
+    "franksunp/neurogolf-consolidated-audit"
+  ],
+  "modelDataSources": [],
+  "datasetDataSources": [
+    "seddiktrk/current-best-submission"
+  ],
+  "competitionDataSources": [
+    "neurogolf-2026"
+  ]
+}

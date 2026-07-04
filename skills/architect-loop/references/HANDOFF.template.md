@@ -32,7 +32,7 @@ Not in this file or a referenced lane report = did not happen.
 - Spec: [link or one-line summary]
 - Gates: docs/gates/[slice].md, frozen at commit [sha]
 - Lanes: [1 | N disjoint lanes; reports in docs/lanes/[slice]-[lane].md]
-- Effort: high - [why]
+- Effort: medium - [why; raise to high only for correctness-critical slices]
 
 | Gate | Command | Threshold | Raw result | Architect verdict |
 |------|---------|-----------|------------|-------------------|

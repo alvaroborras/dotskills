@@ -14,13 +14,14 @@ Dispatch one read-only researcher per question:
 ```bash
 mkdir -p .architect/research
 codex exec -C <repo-root> --sandbox read-only -c web_search="live" \
-  -m gpt-5.5 -c model_reasoning_effort="high" \
+  -m gpt-5.5 -c model_reasoning_effort="medium" \
   -o .architect/research/<NN>-<topic>.md \
   - < .architect/research/<NN>-<topic>.prompt.md
 ```
 
-Research uses high effort because gathering benefits from coverage and builder
-lanes also default to high. Synthesis and judgment stay with the architect.
+Research uses medium effort — read-only gathering benefits less from deep
+reasoning than from breadth. Reserve high for schema-critical or
+security-sensitive research.
 
 ## Research Block Template
 
