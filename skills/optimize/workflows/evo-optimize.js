@@ -1,5 +1,5 @@
 /*
- * evo-optimize.js — Claude Code dynamic-workflow driver for the /evo:optimize round loop.
+ * evo-optimize.js — the host runtime dynamic-workflow driver for the /evo:optimize round loop.
  *
  * This is the CODE form of plugins/evo/skills/optimize/SKILL.md "The Loop". It is an
  * opt-in, Claude-Code-only driver; the prose skill remains the canonical, host-agnostic
@@ -123,7 +123,6 @@ const BRIEFS = {
           parent: { type: 'string' },
           boundaries: { type: 'string' },
           pointerTraces: { type: 'array', items: { type: 'string' } },
-          hard: { type: 'boolean' },
         },
       },
     },
@@ -163,11 +162,14 @@ const VERDICT = {
 // Implement stage output: experiment allocated + edited in its worktree, NOT yet run.
 const IMPL_RESULT = {
   type: 'object',
-  required: ['expId', 'worktree'],
+  required: ['status'],
   properties: {
+    status: { type: 'string', enum: ['ready', 'needs_rebrief'] },
     expId: { type: 'string', pattern: '^exp_[0-9]+$' },
     worktree: { type: 'string' },
     summary: { type: 'string' },
+    rebriefReason: { type: 'string' },
+    evidence: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -253,14 +255,36 @@ const A = typeof args === 'string'
   ? (() => { try { return JSON.parse(args) } catch (_) { return {} } })()
   : (args || {})
 const pr = A.pluginRoot || ''
+
+const DEFAULT_STALL_LIMIT = 5
+function parseStallLimit(value) {
+  if (typeof value === 'string' && value.trim().toLowerCase() === 'indefinite') return null
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_STALL_LIMIT
+}
+function stallLimitLabel(limit) {
+  return limit === null ? 'indefinite' : String(limit)
+}
+function stallProgress(stallCount, limit) {
+  return limit === null ? `${stallCount}/indefinite` : `${stallCount}/${limit}`
+}
+function isStallExhausted(stallCount, limit) {
+  return limit !== null && stallCount >= limit
+}
+function ideateStallFor(limit) {
+  return limit === null ? 3 : Math.max(1, Math.min(3, limit - 1))
+}
+
 const WIDTH = Number(A.subagents) || 5
 const ITER  = Number(A.budget) || 5
-const LIMIT = Number(A.stall) || 5
+const LIMIT = parseStallLimit(A.stall)
+const USER_STALL_INDEFINITE = LIMIT === null
 // Fire ideators (research escalation) once the stall counter reaches this — strictly BELOW the hard
 // stall limit, so the loop researches its way toward a new direction before it gives up.
-const IDEATE_STALL = Math.max(1, Math.min(3, LIMIT - 1))
+const IDEATE_STALL = ideateStallFor(LIMIT)
 const IDEATE_EVERY_COMMITS = 5   // periodic research cadence (matches prose step 6b)
 const PREVERIFY_MAX = 3          // pre-run verify <-> revise attempts before discarding a rigged edit
+const PLANNING_STALL_LIMIT = 2    // two consecutive half-rebrief rounds means the strategist must change shape
 // Concurrent meta thread (runs alongside the round loop, NOT per-round).
 const META_ENABLED = true
 const META_MODEL = 'inherit' // the meta reasons with the session model (judgment-heavy; never below the loop it supervises)
@@ -394,6 +418,9 @@ function aggregatePrompt(ids) {
 }
 
 function briefPrompt(state, findings, patterns, parents, ideated, metaHints) {
+  const planningStallDirective = planningStall >= PLANNING_STALL_LIMIT
+    ? '\nPLANNING STALL ACTIVE: at least half the lanes returned needs_rebrief for two consecutive rounds. You MUST change the axis, rewrite the objective style into more implementable briefs, or return zero briefs to stop with a planning-failure summary. Do not emit another batch with the same framing.'
+    : ''
   return [
     'You are the evo orchestrator\'s brief writer.',
     'State summary:', state.summary || '',
@@ -407,12 +434,13 @@ function briefPrompt(state, findings, patterns, parents, ideated, metaHints) {
     (metaHints && metaHints.length)
       ? '\nLIVE META SIGNALS (from the concurrent observer — fold relevant ones into objectives/boundaries, e.g. switch off a saturated axis, avoid a flagged dead direction): ' + JSON.stringify(metaHints)
       : '',
+    planningStallDirective,
     `\nWrite up to ${harness.width} briefs (use the full round width of ${harness.width} whenever you can find that many genuinely DISTINCT objectives — multiple briefs MAY branch from the SAME parent when fewer than ${harness.width} frontier parents exist, as long as each attacks a different surface; do not pad with redundant briefs). One per subagent, each with four fields:`,
     '1. objective -- one sentence naming WHERE in system behavior the gain hides, with evidence; NO file/function/edit names.',
     '2. parent -- which experiment id to branch from (choose from the selected parents).',
     '3. boundaries -- what NOT to try and why (discarded approaches, gates not to regress, what adjacent briefs this round do).',
     '4. pointerTraces -- task ids to study first, one-line reason each.',
-    'Mark hard:true on any brief needing deep trace analysis.',
+    'Do NOT use hard:true or any high-reasoning builder route. Hard/ambiguous work must be solved by clearer evidence, tighter pointer traces, smaller lane count, or a different axis.',
     'The briefs MUST NOT collapse onto each other -- distinct objectives, non-overlapping pointer traces, different surfaces.',
     'Return JSON only.',
   ].join(' ')
@@ -437,7 +465,9 @@ function implementPrompt(brief, parent, state) {
   return [
     `First, load and follow the evo subagent skill: Read ${pr}/skills/subagent/SKILL.md IN FULL and follow it as your operating protocol — do not skip it even if the brief looks simple.`,
     ...capsuleLines(state),
-    `Allocate your experiment via \`evo new --parent ${parent}\`, then edit inside the returned worktree to implement the brief.`,
+    'Begin with a preflight before allocating an experiment: read `.evo/project.md`, `evo scratchpad`, the brief, the pointer traces, and the relevant code. If you cannot form a concrete safe edit because of a structural blocker, DO NOT run `evo new`; return status:"needs_rebrief" with rebriefReason and short evidence quotes.',
+    'Valid needs_rebrief reasons are only: contradictory brief evidence; invalid or stale parent/context; no concrete edit path after required reads; benchmark-validity or gate-gaming risk; or the brief requires out-of-scope changes. Ordinary uncertainty or hard implementation work is not enough.',
+    `If preflight passes, allocate your experiment via \`evo new --parent ${parent}\`, then edit inside the returned worktree to implement the brief.`,
     'IMPORTANT: do NOT run `evo run` yet — a pre-run verifier audits your change first. Stop once the edit is complete.',
     'Do NOT edit benchmark, gate, or framework code; do NOT weaken/bypass any gate.',
     '',
@@ -449,7 +479,7 @@ function implementPrompt(brief, parent, state) {
     '',
     'Context (current state):', state.summary || '',
     '',
-    'Return the experiment id you created (exp_NNNN), its worktree path, and a 1-2 sentence change summary.',
+    'Return status:"ready", the experiment id you created (exp_NNNN), its worktree path, and a 1-2 sentence change summary; OR status:"needs_rebrief" with rebriefReason and evidence without allocating an experiment.',
   ].join('\n')
 }
 
@@ -524,6 +554,7 @@ function collectPrompt(results, round) {
   return [
     `Round ${round} results:`, JSON.stringify(results.map((r) => ({ expIds: r.expIds, status: r.status, improver: r.committedImprover }))),
     '\nRead each evaluated node\'s outcome.json (`.evo/run_*/experiments/<id>/attempts/NNN/outcome.json`) and spot shared failure modes the per-subagent summaries glossed over.',
+    'For any status:"needs_rebrief" entries, do NOT treat them as failed experiments; record the cited blocker as a planning signal for the next strategy pass.',
     'Where a committed node has 3+ children that all regressed, run `evo prune <id> --reason "exhausted: ..."` (never `evo discard` a committed node).',
     'Record cross-cutting learnings with `evo set <id> --note "..."` and any workspace insight with `evo note "..."`.',
     'Return a one-line summary of what you pruned and noted.',
@@ -541,7 +572,7 @@ function metaPrompt(ctx, intervalS, reported, journal) {
     `FIRST pace yourself with an INTERRUPTIBLE wait, so you stop promptly when the optimize loop ends. Run this single Bash command with a tool timeout of at least ${(intervalS + 30) * 1000} ms:`,
     `  \`if [ -f ${DONE_SENTINEL} ]; then echo OPTIMIZE_DONE; else for i in $(seq 1 ${Math.ceil(intervalS / META_HOP_S)}); do sleep ${META_HOP_S}; [ -f ${DONE_SENTINEL} ] && { echo OPTIMIZE_DONE; break; }; done; fi\``,
     `If that prints OPTIMIZE_DONE, the optimize loop has finished — return {"briefHints":[],"alerts":[],"stops":[],"harnessEdits":[]} immediately WITHOUT gathering any signals. Otherwise the full interval elapsed: now gather signals and report.`,
-    `Current loop state: round=${ctx.round}, stall=${ctx.stall}/${LIMIT}, best=${ctx.bestScore}.`,
+    `Current loop state: round=${ctx.round}, stall=${stallProgress(ctx.stall, harness.stall)}, best=${ctx.bestScore}.`,
     `Already reported (do NOT repeat — only emit findings NEW since these): ${JSON.stringify(reported || [])}.`,
     `META-LOG (notes your past ticks left for you — each tick is a fresh agent, this is your only reasoning memory): ${JSON.stringify(journal || [])}.`,
     'Optionally return `journal`: one concise working note to your future ticks — observations not yet actionable, pending hypotheses with the evidence so far, watch-items to re-check. Omit it when there is nothing worth carrying forward.',
@@ -581,9 +612,22 @@ async function runBrief(brief, state) {
   let best = null
   for (let depth = 0; depth < harness.budget; depth++) {
     const impl = await agent(withHarnessPrompt('implement', implementPrompt(brief, parent, state)), {
-      schema: IMPL_RESULT, ...(brief.hard ? {} : { model: 'sonnet' }), phase: 'Optimize', label: `impl:${parent}#${depth}`,
+      schema: IMPL_RESULT, model: 'sonnet', phase: 'Optimize', label: `impl:${parent}#${depth}`,
     })
-    if (!impl || !impl.expId) break
+    if (!impl) break
+    if (impl.status === 'needs_rebrief') {
+      return {
+        expIds: [],
+        status: 'needs_rebrief',
+        committedImprover: false,
+        needsRebrief: true,
+        parent,
+        objective: brief.objective,
+        rebriefReason: impl.rebriefReason || 'builder could not form a concrete safe edit',
+        evidence: impl.evidence || [],
+      }
+    }
+    if (!impl.expId) break
 
     // pre-verify <-> revise feedback loop (design-time cheating gate)
     let pv = null
@@ -594,7 +638,7 @@ async function runBrief(brief, state) {
       if (pv && pv.pass) break
       if (v < PREVERIFY_MAX - 1) {
         await agent(revisePrompt(impl.expId, impl.worktree, pv && pv.findings), {
-          ...(brief.hard ? {} : { model: 'sonnet' }), phase: 'Optimize', label: `revise:${impl.expId}#${v}`,
+          model: 'sonnet', phase: 'Optimize', label: `revise:${impl.expId}#${v}`,
         })
       }
     }
@@ -636,6 +680,7 @@ async function runBrief(brief, state) {
 // The loop
 // ---------------------------------------------------------------------------
 let stall = 0
+let planningStall = 0
 let round = 0
 let lastIdeatedCommit = 0      // committedCount at the last ideator dispatch (periodic cadence)
 let ideatedThisStall = false   // fire ideators once per stall episode, not every stalled round
@@ -691,6 +736,10 @@ function applyHarnessEdit(e, atRound) {
   if (!e || !e.op) return
   const rec = { round: atRound, op: e.op, rationale: e.rationale || '' }
   if (e.op === 'set-knob' && e.knob && typeof e.value === 'number') {
+    if (e.knob === 'stall' && USER_STALL_INDEFINITE) {
+      log(`META harness edit IGNORED (stall is user-locked to indefinite): ${JSON.stringify(e)}`)
+      return
+    }
     harness[e.knob] = e.value; rec.knob = e.knob; rec.value = e.value
   } else if (e.op === 'toggle-phase' && e.phaseName) {
     harness.phases[e.phaseName] = e.enabled !== false; rec.phaseName = e.phaseName; rec.enabled = harness.phases[e.phaseName]
@@ -711,7 +760,7 @@ function applyHarnessEdit(e, atRound) {
 
 function harnessSummary() {
   return {
-    width: harness.width, budget: harness.budget, stall: harness.stall,
+    width: harness.width, budget: harness.budget, stall: stallLimitLabel(harness.stall),
     ideateEvery: harness.ideateEvery, ideateStall: harness.ideateStall,
     phases: harness.phases,
     // Full directive texts included so fresh meta ticks see standing overrides and don't duplicate them.
@@ -722,11 +771,11 @@ function harnessSummary() {
   }
 }
 
-log(`evo-optimize start: subagents=${WIDTH} budget=${ITER} stall=${LIMIT} meta=${META_ENABLED ? META_MODEL : 'off'} | argsType=${typeof args} A.subagents=${A.subagents} A.budget=${A.budget} A.stall=${A.stall}`)
+log(`evo-optimize start: subagents=${WIDTH} budget=${ITER} stall=${stallLimitLabel(LIMIT)} meta=${META_ENABLED ? META_MODEL : 'off'} | argsType=${typeof args} A.subagents=${A.subagents} A.budget=${A.budget} A.stall=${A.stall}`)
 
 // The optimize round loop (runs concurrently with metaLoop via Promise.all).
 async function optimizeLoop() {
-  while (stall < harness.stall) {
+  while (!isStallExhausted(stall, harness.stall)) {
     round += 1
 
     phase('Orient')
@@ -786,7 +835,8 @@ async function optimizeLoop() {
     const briefs = dedupeBriefs((briefOut && briefOut.briefs) || [])
     if (briefs.length === 0) { log('no briefs produced — stopping'); break }
 
-    // N3..N4 — fan out one lane per brief; each lane: implement -> pre-verify<->revise -> run -> post-audit.
+    // N3..N4 — fan out one lane per brief; each lane: preflight -> implement -> pre-verify<->revise -> run -> post-audit.
+    // A lane can return needs_rebrief before evo new; that is planning signal, not an experiment.
     const results = (await parallel(briefs.map((b) => () => runBrief(b, state)))).filter(Boolean)
 
     // N5 — collect: prune dead lineages, record notes.
@@ -794,25 +844,35 @@ async function optimizeLoop() {
     await agent(withHarnessPrompt('collect', collectPrompt(results, round)), { phase: 'Collect', label: `collect:r${round}` })
     await runInjected('after-collect', `r${round}`)
 
-    // Loop control: stall resets only when this round produced a VERIFIED committed score that beats
+    // Loop control: experiment stall resets only when this round produced a VERIFIED committed score that beats
     // the PRIOR BEST in the metric direction (a beat-its-own-parent commit is branch progress, not a
-    // new best, and does NOT reset stall). No budget in the condition.
+    // new best, and does NOT reset stall). needs_rebrief is tracked separately as planningStall.
+    // No budget in either condition.
+    const rebriefCount = results.filter((r) => r && r.needsRebrief).length
+    const experimentResults = results.filter((r) => !(r && r.needsRebrief))
+    const planningStalled = results.length > 0 && rebriefCount * 2 >= results.length
+    planningStall = planningStalled ? planningStall + 1 : 0
+    if (planningStall >= PLANNING_STALL_LIMIT) {
+      metaSignals.push(`PLANNING STALL: ${rebriefCount}/${results.length} lanes returned needs_rebrief for ${planningStall} consecutive round(s). The next briefs must change axis, rewrite objective style, or stop.`)
+    }
+
     const dir = state.direction || 'max'
-    const gains = results
+    const gains = experimentResults
       .filter((r) => r.committedImprover && r.valid !== false && typeof r.bestScore === 'number')
       .map((r) => r.bestScore)
     const roundBest = gains.length ? (dir === 'min' ? Math.min(...gains) : Math.max(...gains)) : null
     const improved = roundBest !== null && (dir === 'min' ? roundBest < state.bestScore : roundBest > state.bestScore)
-    stall = improved ? 0 : stall + 1
+    const onlyPlanningSignal = results.length > 0 && experimentResults.length === 0 && rebriefCount > 0
+    stall = onlyPlanningSignal ? stall : (improved ? 0 : stall + 1)
     if (improved) ideatedThisStall = false
-    log(`round ${round}: improved=${improved} roundBest=${roundBest} prevBest=${state.bestScore} stall=${stall}/${LIMIT} spent=${budget.spent()}`)
+    log(`round ${round}: improved=${improved} roundBest=${roundBest} prevBest=${state.bestScore} stall=${stallProgress(stall, harness.stall)} planningStall=${planningStall}/${PLANNING_STALL_LIMIT} rebriefs=${rebriefCount}/${results.length} spent=${budget.spent()}`)
   }
   done = true
   // Wake any in-flight meta tick now (its `sleep` can't see the in-memory `done`): the sentinel
   // makes the tick's interruptible wait exit within ~META_HOP_S instead of running the full interval.
   if (META_ENABLED) await agent(`mkdir -p .evo && : > ${DONE_SENTINEL} && echo signalled`, { phase: 'Collect', label: 'signal:optimize-done' })
-  log(`optimize loop finished after ${round} round(s), final stall=${stall}/${LIMIT}`)
-  return { rounds: round, finalStall: stall }
+  log(`optimize loop finished after ${round} round(s), final stall=${stallProgress(stall, harness.stall)}`)
+  return { rounds: round, finalStall: stall, finalPlanningStall: planningStall, stallLimit: stallLimitLabel(harness.stall) }
 }
 
 // Concurrent meta thread (P1-sliver/P2-P5/P7): an independent, self-paced Opus observer that runs

@@ -6,14 +6,16 @@
   "language": "python",
   "kernelDataSources": [
     "seddiktrk/neurogolf-2026-utils",
-    "ryosukeshiroshita/neurogolf-7186-61-github-com-qurore-kaggloop",
-    "biohack44/neurogolf-new-best-public-attack",
-    "franksunp/neurogolf-consolidated-audit"
+    "llccqq624/neurogolf-my-best-solution",
+    "ryosukeshiroshita/neurogolf-7266-48-github-com-qurore-kaggloop",
+    "boristown/agi-neurogolf-chatgptloop",
+    "prvsiyan/neurogolf-7266-72-w-visualizations",
+    "lucifer19/neurogolf-agi-compression-core",
+    "yusuketogashi/2026-neurogolf-baseline",
+    "franksunp/compact-onnx-artifact-starter-ii"
   ],
   "modelDataSources": [],
-  "datasetDataSources": [
-    "seddiktrk/current-best-submission"
-  ],
+  "datasetDataSources": [],
   "competitionDataSources": [
     "neurogolf-2026"
   ]

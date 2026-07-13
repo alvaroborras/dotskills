@@ -1,11 +1,11 @@
 ---
 name: optimize
 description: Drive structured autoresearch iteration after evo:discover and the baseline commit. Use when the user invokes /evo:optimize or asks to try ideas, try variants, run experiments, use available GPUs, improve the current best/frontier, continue an evo search, or compare candidate changes in an evo workspace. The orchestrator plans and spawns optimization subagents; candidate edits/runs belong to those subagents. Width is set via subagents=N (1 for serial workloads, larger for parallel); the loop's structural value applies at any width.
-argument-hint: "[subagents=N] [budget=N] [stall=N]"
+argument-hint: "[subagents=N] [budget=N] [stall=N|indefinite]"
 evo_version: 0.7.0
 ---
 
-Run the `evo` optimization loop. Each round, the orchestrator writes structured briefs and spawns subagents that execute within them. Each subagent is semi-autonomous: it reads the pointer traces, forms the concrete edit, runs experiments, and can iterate within its branch. Runs until interrupted or the stall limit is reached.
+Run the `evo` optimization loop. Each round, the orchestrator writes structured briefs and spawns subagents that execute within them. Each subagent is semi-autonomous: it reads the pointer traces, forms the concrete edit, runs experiments, and can iterate within its branch. Runs until interrupted, no viable work remains, the score ceiling is reached, or a finite stall limit is reached.
 
 **This skill is the canonical loop for ALL post-discover work — including serial workloads.** If the workspace's resource profile forces width 1 (single GPU, single-process benchmark, etc.), you still invoke `/evo:optimize` -- just pass `subagents=1`. The loop's value is the STRUCTURE around each experiment (scan-subagent cross-cutting analysis between rounds, verifier pre/post hooks via the subagent skill, ideator spawning on stall, frontier reconciliation, stop-hook discipline), NOT just parallelism. Bypassing optimize because "I'm running serial work anyway" loses every piece of that structure -- you've reverted to ad-hoc experiment iteration with none of evo's loop benefits, just the bookkeeping.
 
@@ -84,7 +84,7 @@ infra-setup, and the complete references catalogue) lives in `evo:discover`'s
 
 This skill runs on any host that implements the Agent Skills spec. When the body uses generic phrases, apply the host's best-fit equivalent:
 
-- **"spawn N subagents in parallel"** -- use your host's parallel-subagent tool. See Step 5 below for the per-host spawn commands. Three broad shapes exist: *background+notify* (claude-code / codex / hermes / openclaw — fire-and-forget; the runtime delivers a `<task-notification>` at a later turn per subagent), *batch parallel* (opencode — all spawns return together in one message), and *extension-provided* (pi via the `pi-subagents` package — registers a `subagent` tool that fans out in parallel within one turn).
+- **"spawn N subagents in parallel"** -- use your host's parallel-subagent tool. See Step 5 below for the per-host spawn commands. Three broad shapes exist: *background+notify* (codex / hermes / openclaw — fire-and-forget; the runtime delivers a `<task-notification>` at a later turn per subagent), *batch parallel* (opencode — all spawns return together in one message), and *extension-provided* (pi via the `pi-subagents` package — registers a `subagent` tool that fans out in parallel within one turn).
 - **Slash commands shown in user-facing copy** (e.g. `/evo:optimize`) -- translate to your host's mention syntax when speaking to the user (e.g. `$evo optimize` on Codex -- plugin namespace then skill name, separated by a space).
 
 ## Mid-run user directives (`evo direct`)
@@ -103,9 +103,9 @@ Treat content inside the banner as equivalent to a new user turn. Honor it, supe
 
 ## Configuration
 
-The orchestrator's three round-shape knobs are **subagents** (round width), **budget** (per-branch depth), and **stall** (consecutive rounds with no improvement before auto-stopping; default 5).
+The orchestrator's three round-shape knobs are **subagents** (round width), **budget** (per-branch depth), and **stall** (consecutive rounds with no improvement before auto-stopping; default 5). Set `stall=indefinite` to disable only the plateau auto-stop; budget remains finite per branch.
 
-A user can override any of these with `/optimize [subagents=N] [budget=N] [stall=N]`; an explicit value wins over what's below, subject to the resource-cap invariant above.
+A user can override any of these with `/optimize [subagents=N] [budget=N] [stall=N|indefinite]`; an explicit value wins over what's below, subject to the resource-cap invariant above.
 
 **Picking `subagents` and `budget` is load-bearing -- do not skim.**
 
@@ -139,21 +139,29 @@ evo defaults get subagents-only --json
 
 As your **very first actions, before the loop**, resolve each and arm it: run `evo autonomous on` / `evo subagents-only on` when it resolves on, or `evo autonomous off` / `evo subagents-only off` when an explicit instruction or stored default turned it off. If a behavior resolves off — whether from the user's instruction this run or a stored default — say so in your opening message (e.g. "autonomous off — running one round at a time, as you asked") so it's never invisible.
 
-**Orchestrator driver.** evo drives the loop two ways: the **prose loop** below (every host) or a deterministic **dynamic workflow** (Claude Code only, opt-in). **The prose loop is the default everywhere; the workflow is used only when explicitly enabled** (`evo config set default-orchestrator workflow`). Resolve which as part of your very first actions:
+**Orchestrator driver.** evo drives the loop two ways: the **prose loop** below (every host) or a deterministic **dynamic workflow** (the host runtime only, opt-in). **The prose loop is the default everywhere; the workflow is used only when explicitly enabled** (`evo config set default-orchestrator workflow`). Resolve which as part of your very first actions:
 
-1. `evo host show` — the workflow driver requires `claude-code`. If it prints `<not set>` (a pre-host workspace), determine your actual runtime from your own context (system prompt, env such as `CLAUDECODE=1`, self-identity): **only if you are genuinely Claude Code**, do the one-time host migration now (`evo host set claude-code`) and continue; if you are any other runtime, do NOT stamp the host here — leave it for Step 0.1 and use the prose loop.
-2. `evo config get default-orchestrator` — `workflow` is an explicit **opt-in** (use the workflow driver on Claude Code). `prose` **or unset** resolves to the prose loop. An explicit user instruction this run still wins.
+1. `evo host show` — the workflow driver requires `codex`. If it prints `<not set>` (a pre-host workspace), determine your actual runtime from your own context (system prompt, runtime self-identity): **only if you are genuinely the host runtime**, do the one-time host migration now (`evo host set codex`) and continue; if you are any other runtime, do NOT stamp the host here — leave it for Step 0.1 and use the prose loop.
+2. `evo config get default-orchestrator` — `workflow` is an explicit **opt-in** (use the workflow driver on the host runtime). `prose` **or unset** resolves to the prose loop. An explicit user instruction this run still wins.
 
-**Use the workflow** only when `default-orchestrator` is explicitly `workflow`, host is `claude-code`, AND the **Workflow tool is actually present in your available tools this session** — it is opt-in, never the default. The availability check is load-bearing: **older Claude Code builds do not ship the Workflow tool**, so verify it's really in your toolset; do not assume it exists from the host alone. Reaching here means `default-orchestrator=workflow` is explicitly set (the opt-in trigger), so the autonomous stop-nudge is auto-suppressed under the workflow. Launch it once, do NOT drive the loop turn-by-turn:
+**Use the workflow** only when `default-orchestrator` is explicitly `workflow`, host is `codex`, AND the **Workflow tool is actually present in your available tools this session** — it is opt-in, never the default. The availability check is load-bearing: verify it's really in your toolset; do not assume it exists from the host alone. Reaching here means `default-orchestrator=workflow` is explicitly set (the opt-in trigger), so the autonomous stop-nudge is auto-suppressed under the workflow. Launch it once, do NOT drive the loop turn-by-turn:
 
-- Call the **Workflow** tool with `scriptPath: ${CLAUDE_PLUGIN_ROOT}/skills/optimize/workflows/evo-optimize.js` and `args: {pluginRoot: "${CLAUDE_PLUGIN_ROOT}", subagents: <N>, budget: <N>, stall: <N>}`, using the round sizing you resolved above. **Pass all four keys explicitly — never omit one.** For `stall`, use the user's `/optimize stall=N` override if given, else the default 5. (The workflow's stop condition is the stall limit, so a dropped `stall` silently reverts it to 5.)
+- Call the **Workflow** tool with `scriptPath: ${CLAUDE_PLUGIN_ROOT}/skills/optimize/workflows/evo-optimize.js` and `args: {pluginRoot: "${CLAUDE_PLUGIN_ROOT}", subagents: <N>, budget: <N>, stall: <N|indefinite>}`, using the round sizing you resolved above. **Pass all four keys explicitly — never omit one.** For `stall`, use the user's `/optimize stall=N` or `/optimize stall=indefinite` override if given, else the default 5. (The workflow's finite stop condition is the stall limit, so a dropped `stall` silently reverts it to 5; `stall=indefinite` disables only this plateau stop.)
 - Report the returned `runId` and tell the user to watch progress with `/workflows`. The workflow runs the round loop itself (orient → mandatory scan + cross-history axis check → ideators on stall/periodic → briefs → fan-out + verify → collect → frontier-select → stall) plus the concurrent meta controller; you do **not** execute "The Loop" section below, and you do **not** need autonomous mode (the workflow self-drives; its stall limit is the stop).
 
-Use **The Loop** below by default — it is the prose driver on every host, and the path whenever the workflow is not explicitly enabled (`default-orchestrator` unset or `prose`), the host is not `claude-code`, or the Workflow tool is unavailable (e.g. an older Claude Code build). The workflow is only an execution strategy over the same `evo` CLI; gates, frontier, dashboard, and recovery are identical either way.
+Use **The Loop** below by default — it is the prose driver on every host, and the path whenever the workflow is not explicitly enabled (`default-orchestrator` unset or `prose`), the host is not `codex`, or the Workflow tool is unavailable. The workflow is only an execution strategy over the same `evo` CLI; gates, frontier, dashboard, and recovery are identical either way.
 
-**Reconcile config when you fall back to prose.** The stop-nudge that drives the prose loop is auto-suppressed whenever `default-orchestrator` is `workflow`. So if you fall back to the prose loop on Claude Code because the Workflow tool isn't available (older build) while `default-orchestrator` is still `workflow` from a prior run, you MUST set it back — `evo config set default-orchestrator prose` — and arm autonomous as usual. Otherwise the prose loop's stop-nudge stays suppressed and the run stalls after one round. Invariant to preserve: `default-orchestrator=workflow` in config iff the workflow is actually the driver this run.
+**Reconcile config when you fall back to prose.** The stop-nudge that drives the prose loop is auto-suppressed whenever `default-orchestrator` is `workflow`. So if you fall back to the prose loop on the host runtime because the Workflow tool isn't available (older build) while `default-orchestrator` is still `workflow` from a prior run, you MUST set it back — `evo config set default-orchestrator prose` — and arm autonomous as usual. Otherwise the prose loop's stop-nudge stays suppressed and the run stalls after one round. Invariant to preserve: `default-orchestrator=workflow` in config iff the workflow is actually the driver this run.
 
-**Autonomous mode.** Off lets you stop naturally at a turn boundary — finish a round, report, and stop. On arms the stop-nudge: at every turn boundary you are re-prompted to keep driving the loop until the **stall** limit is hit or the user interrupts. Without it, the loop does NOT force-continue across turn boundaries. To stop an autonomous run, the user runs `evo autonomous off` or `evo exit-optimize-mode`.
+**Autonomous mode.** Off lets you stop naturally at a turn boundary — finish a round, report, and stop. On arms the stop-nudge: at every turn boundary you are re-prompted to keep driving the loop until the finite **stall** limit is hit, no viable work remains, the score ceiling is reached, or the user interrupts. With `stall=indefinite`, plateau alone does not stop the loop. Without autonomous mode, the loop does NOT force-continue across turn boundaries. To stop an autonomous run, the user runs `evo autonomous off` or `evo exit-optimize-mode`.
+
+**Notification resume.** If a turn begins with one or more completed
+subagent notifications and autonomous mode is armed, treat the turn as an
+automatic continuation of this optimize loop. Do not stop after summarizing the
+notification. Extract each completed subagent result, close each completed
+agent handle, collect the round state, run the required cross-cutting scan and
+pattern checks, then continue to the next loop step unless a real stop
+condition is met or the user explicitly asks to pause/stop.
 
 **Subagents-only mode.** Off, the orchestrator may edit files directly — the optimization protocol still pushes edits through subagents (you write briefs; they edit in their worktrees), but a one-off orchestrator edit is not blocked. On arms the deny-gate: orchestrator file-mutation tools (Edit/Write, mutating Bash) are denied on an alternating cadence — 1st violation blocked, 2nd allowed, 3rd blocked, and so on — each block nudging you to delegate the edit to a subagent. It is a nudge, not a hard block: an edit can still land on an even-numbered attempt. Subagent edits (sessions with an `exp_id`) are never gated. To lift it, the user runs `evo subagents-only off` or `evo exit-optimize-mode`.
 
@@ -226,13 +234,13 @@ Both layers read traces; the depth differs. The orchestrator scans for cross-cut
 
 ## The Loop
 
-Repeat until interrupted or stall limit reached:
+Repeat until interrupted, no viable work remains, the score ceiling is reached, or a finite stall limit is reached:
 
 ### 1. Read current state
 
 **Step 0 (always, before anything else): ensure you have read `.evo/project.md`.** Its contents define the optimization metric and goal; every pattern you report MUST be tied to a failure mode of that goal. If you haven't read it yet in this session, read it now -- before listing experiments, opening any `outcome.json`, or spawning sub-agents. If the file is missing, stop and tell the user.
 
-**Step 0.1 (one-time auto-migration): ensure the workspace knows what runtime you are.** Run `evo host show`. If it prints `<not set>`, the workspace pre-dates the host signature field — declare your runtime now: `evo host set <one of: claude-code, codex, opencode, openclaw, hermes, pi, generic>`. You know what runtime you're operating in (your system prompt, env vars like `CLAUDECODE=1`, your own self-identity); pick the matching value. If genuinely unsure, use `generic`. Do not ask the user — this is a one-time silent migration. Subsequent rounds skip this step (`evo host show` returns the recorded value).
+**Step 0.1 (one-time auto-migration): ensure the workspace knows what runtime you are.** Run `evo host show`. If it prints `<not set>`, the workspace pre-dates the host signature field — declare your runtime now: `evo host set <one of: codex, opencode, openclaw, hermes, pi, generic>`. You know what runtime you're operating in (your system prompt and own self-identity); pick the matching value. If genuinely unsure, use `generic`. Do not ask the user — this is a one-time silent migration. Subsequent rounds skip this step (`evo host show` returns the recorded value).
 
 ```bash
 evo scratchpad          # bounded state summary (tree, frontier, awaiting decision, gates, annotations, what-not-to-try, notes)
@@ -311,6 +319,10 @@ Pass this brief verbatim as the sub-agent's prompt:
 
 Wait for all scan sub-agents to return. Reconcile near-duplicate findings (`timeout_error` ≈ `error_timeout`) by judgment and combine with the structural-pass findings from step 2.
 
+After extracting a completed scan sub-agent's result, immediately close that
+agent handle with the host's close-agent tool. Completed scan agents must not
+remain listed after their findings are recorded.
+
 **Verify every pattern before emitting it.** For each pattern in your final output, confirm that at least one reported experiment's outcome.json or trace content contains evidence that directly supports the pattern's description. If you cannot cite a specific field value or quoted message as evidence, drop the pattern. Do not emit speculative causal attributions ("approach X regresses because it removes Y") unless the trace or error text explicitly states that mechanism. This filter applies to both sub-agent findings and your own inline observations.
 
 These unified, verified cross-cutting findings feed step 4's brief-writing.
@@ -339,8 +351,12 @@ Spawn all subagents in a **single batch** using your host's parallel-subagent to
 
 Per host, the spawn shape matters because evo's loop depends on *completion notifications* arriving turn-by-turn (so the orchestrator can review each subagent's outcome and decide round 2):
 
-- **claude-code** — fire one `Bash(run_in_background=true)` call per brief. The bash invokes the subagent (the host's `Task` tool, or any equivalent that runs the brief to completion). Each backgrounded bash returns immediately and the runtime delivers a `<task-notification>` at a later turn when each subagent finishes. Do NOT wait on subagents inline; fan them out, then exit your current turn — notifications arrive in subsequent turns.
-- **codex** — call `spawn_agent` once per optimization brief. If `spawn_agent`
+- **codex** — call `spawn_agent` once per optimization brief. Record every
+  returned agent id in the round state. When an agent completes, extract its
+  final message, then call `close_agent` for that id before planning or
+  spawning more work. Completed Codex agents remain open until closed, so this
+  cleanup is mandatory to keep `/agents` usable and avoid concurrency-limit
+  friction. If `spawn_agent`
   is deferred or not visible yet, first use Codex's tool-discovery tool
   (`tool_search`) with a query like `spawn agent subagent`, then call the
   discovered spawn tool. The optimize skill's plain-language trigger is
@@ -357,11 +373,14 @@ Per host, the spawn shape matters because evo's loop depends on *completion noti
 
 Respect the host's concurrency cap; batch if N exceeds it.
 
-Pick a faster model for straightforward briefs and a stronger model for harder ones requiring deeper trace analysis, if your host exposes per-call model selection.
+Run routine optimization builders at the cheap/medium implementation tier. Do
+not use a high/xhigh builder route for hard briefs; hard or ambiguous work
+should be handled by clearer evidence, tighter pointer traces, a smaller lane
+count, or a strategist rebrief in the next round.
 
 Each subagent prompt MUST start with the literal sentence:
 
-> "First, load and follow the **evo subagent skill** (named `subagent` under the evo plugin in your host's skill registry — use your host's skill loader, not a filesystem path). Allocate your experiment via `evo new --parent <id>`, edit inside the returned worktree, evaluate via `evo run <exp_id>`. Do not skip these steps even if the brief looks simple. If `evo run` exits `GATE_FAILED`, fix the edit so it satisfies the inherited gate; do not weaken, bypass, delete, or argue with the gate unless the orchestrator explicitly changes the brief."
+> "First, load and follow the **evo subagent skill** (named `subagent` under the evo plugin in your host's skill registry — use your host's skill loader, not a filesystem path). Preflight the brief before allocating: read the project, scratchpad, pointer traces, and relevant code. If a structural blocker prevents a concrete safe edit, return `needs_rebrief` with cited evidence and do not run `evo new`. Otherwise allocate your experiment via `evo new --parent <id>`, edit inside the returned worktree, and evaluate via `evo run <exp_id>`. Do not skip these steps even if the brief looks simple. If `evo run` exits `GATE_FAILED`, fix the edit so it satisfies the inherited gate; do not weaken, bypass, delete, or argue with the gate unless the orchestrator explicitly changes the brief."
 
 Then append:
 - The four-field brief verbatim (objective, parent, boundaries/anti-patterns, pointer traces)
@@ -375,14 +394,27 @@ spawned must equal the resolved `subagents=N` unless the user explicitly
 requested a smaller direct/manual run. Scan/analysis subagents are separate and
 do not count toward this number.
 
+Record every spawned optimization subagent id in the round state before ending
+the turn. When a completion arrives, whether through `wait_agent` or a
+`<subagent_notification>`, close the completed agent handle immediately after
+extracting its final message and before planning or spawning the next round.
+
 ### 6. Collect results and update state
 
 After all subagents complete:
 
 - Review each subagent's summary
+- Close every completed subagent handle after its summary is recorded. This
+  applies to optimization workers, read-only scan agents, and ideators.
 - Record the round's best score and compare to the previous best
 - If no subagent improved the score, increment the stall counter
 - If any improved, reset the stall counter
+- If a subagent returned `needs_rebrief`, treat it as a planning signal, not an
+  experiment failure. It must not allocate an experiment or increment the normal
+  experiment-stall counter by itself. Track a separate planning-stall counter;
+  if at least half the lanes return `needs_rebrief` for 2 consecutive rounds,
+  the next strategist pass must change axis, rewrite the objective style, or
+  stop with a planning-failure summary.
 - Check if subagents added new gates -- note these in your state tracking
 - If multiple experiments failed the same gate, consider whether the gate is too restrictive or the briefs were aimed at the wrong surface
 
@@ -499,15 +531,16 @@ Proposals are advisory, not mandatory. If none look better than what step 3's sc
 ### 7. Continue or stop
 
 **Continue** if:
-- Stall counter < stall limit
+- Stall counter < finite stall limit, or stall is indefinite
 - User hasn't interrupted
 - Score hasn't reached the theoretical maximum
 
 To continue, go back to step 1.
 
 **Stop** if:
-- Stall counter >= stall limit (N consecutive rounds with no improvement)
+- Stall counter >= finite stall limit (N consecutive rounds with no improvement); ignored when `stall=indefinite`
 - Score reached theoretical maximum (1.0 for max metric, 0.0 for min metric)
+- No explorable frontier or no useful briefs remain
 - User interrupted
 
 On stop, the loop is done -- do not go back to step 1. Print a final summary:

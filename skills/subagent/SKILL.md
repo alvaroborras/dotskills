@@ -176,7 +176,15 @@ Starting from the brief's objective and the traces you read, form a concrete edi
 - **What** changes: the minimal specific edit (not "improve X" but "inject the last error into the next turn prefixed with 'Previous attempt failed:', cap 2 retries").
 - **Predicted effect**: which task or behavior this should change and why.
 
-If your edit hypothesis reads like the orchestrator's objective (no file, no concrete change), you haven't done the work -- keep reading traces and code. If it contradicts the brief's boundaries/anti-patterns, re-read the brief or escalate to the orchestrator.
+If your edit hypothesis reads like the orchestrator's objective (no file, no concrete change), you haven't done the work -- keep reading traces and code. If it contradicts the brief's boundaries/anti-patterns, re-read the brief.
+
+If, after reading the required project state, pointer traces, and relevant code,
+you still cannot form a concrete safe edit because of a structural blocker,
+return `needs_rebrief` to the orchestrator **before** creating an experiment.
+Valid reasons are only: contradictory brief evidence; invalid or stale
+parent/context; no concrete edit path after the required reads;
+benchmark-validity or gate-gaming risk; or the brief requires out-of-scope
+changes. Ordinary uncertainty or hard implementation work is not enough.
 
 ### 2. Create experiment
 
@@ -395,6 +403,9 @@ If your experiment needs an artifact that is slow to produce and stable across s
 - Do NOT copy `.env` files, bake secrets into source, or hard-code local runtime paths. Runtime setup/env is configured by the orchestrator (`evo config runtime ...`, `evo env ...`) and injected into benchmark/gate processes. If a missing dependency, setup step, or key blocks evaluation, report setup failure.
 - Always annotate your experiments, especially before discarding — the annotation is what persists after the worktree is gone.
 - Stay within your brief's objective and boundaries -- don't drift into unrelated changes
+- Return `needs_rebrief` before `evo new` when a structural blocker prevents a
+  concrete safe edit. Do not create an experiment just to report that the brief
+  is unimplementable.
 
 ## When Done
 
@@ -404,6 +415,7 @@ Return a structured summary:
 ## Results
 - Experiments: <list of exp IDs with scores and status>
 - Best: <exp_id> with score <N>
+- Rebrief: <needs_rebrief reason and evidence, only if no experiment was created>
 
 ## Changes
 - <what you changed in each experiment, briefly>

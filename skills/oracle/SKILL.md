@@ -1,329 +1,192 @@
 ---
 name: oracle
-description: "Oracle second-model review via GPT-5.5 Pro: bundle prompts and files, ChatGPT Project context, debug, refactor, design-check, research. Use when stuck on a bug, need architectural review, cross-checking assumptions, or want a second opinion on complex code."
+description: "Oracle second-model review: bundle prompts/files, debug, refactor, design."
 ---
 
-# Oracle — Second-Model Review
+# Oracle (CLI) — best use
 
-Oracle bundles your prompt + selected files into one request so another model can answer with real repo context. Supports API and browser automation modes. Browser mode can also target a ChatGPT Project so multiple Oracle sessions share persistent project instructions and sources. Treat outputs as advisory; verify against the codebase and tests.
+Oracle bundles a prompt and selected files into a one-shot request so another
+model can answer with real repository context through the API or browser. A
+prompt is required; attach files only when they add necessary context. Treat
+responses as advisory and verify them against the codebase and tests.
 
-## Installation Status
+## Main use case (browser, GPT-5.6)
 
-Oracle is installed globally (`oracle` CLI, v0.13.0). Requires Node 24+ (default via nvm).
+Use browser mode with GPT-5.6 when the ChatGPT account exposes it. GPT-5.6 Sol
+and GPT-5.6 Sol Pro are distinct targets: base Sol uses the Extra High effort
+setting, while Pro is a separate picker target for difficult or long-running
+work.
 
-## Browser Mode Setup
+Recommended defaults:
 
-Browser mode authenticates via your existing Chrome login session. The primary
-method reads Chrome's cookie database directly — no separate login needed, as
-long as you've signed into ChatGPT in Chrome at least once.
+- Engine: browser (`--engine browser`)
+- Base Sol: `--model gpt-5.6-sol`
+- Base Sol maximum reasoning: `--browser-thinking-time heavy` (Extra High)
+- Pro: `--model gpt-5-pro`, without a thinking-time flag
+- Fallback: explicitly use `--model gpt-5.5-pro` when GPT-5.6 is unavailable
+- Attachments: directories/globs plus excludes; never attach secrets by default
 
-**Primary: Chrome cookie database** (recommended — most reliable)
+GPT-5.6 availability is account-dependent. Confirm the base Sol picker and
+retain model-selection evidence. A bare `Pro` picker label proves picker
+selection but does not, by itself, prove the server-side Pro generation.
 
-```bash
-# Close Chrome first — the cookie DB is locked while Chrome is running.
-# Then clear any stale cookie-file env var and run:
-unset ORACLE_BROWSER_COOKIES_FILE
-oracle --engine browser \
-  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-  --browser-cookie-wait 10s \
-  -p "Quick auth test. Reply with OK."
-```
+## GPT-5.6 model selection
 
-Only proceed with a large Oracle run after the quick auth test returns `OK`.
+This version supports the same aliases in browser and API mode:
 
-**Alternative: attach to running Chrome** (when Chrome is already open & logged in)
+- `gpt-5.6`: follow the GPT-5.6 family default
+- `gpt-5.6-sol`: pin ChatGPT's `GPT-5.6 Sol` entry
+- `gpt-5-pro`: select ChatGPT's `Pro` target
 
-Start Chrome with remote debugging enabled:
-
-```bash
-# Quit Chrome, then relaunch:
-open -a "Google Chrome" --args --remote-debugging-port=9222
-```
-
-Then use `--browser-attach-running` to reuse that session:
+For base Sol, use:
 
 ```bash
-oracle --engine browser --browser-attach-running \
-  -p "Quick auth test. Reply with OK."
+oracle --engine browser --model gpt-5.6-sol \
+  --browser-thinking-time heavy \
+  -p "<task>" --file "src/**"
 ```
 
-**Fallback: manual-login profile** (when cookie DB and attach both fail)
+Do not use `--model "GPT-5.6 Sol Pro"`. Pro is intentionally handled as a
+distinct picker target. Browser label validation rejects unknown future
+variants such as `gpt-5.6-luna` instead of silently falling back to Sol; API
+runs preserve such provider model IDs unchanged.
 
-Creates a separate Chrome profile for oracle. Run this ONCE to set up:
+Browser mode maps these aliases to ChatGPT's Sol picker. API and multi-model
+runs preserve the corresponding first-party OpenAI model IDs; provider-qualified
+and unrelated custom IDs remain pass-through values.
+
+The GPT-5.6 browser support depends on the unified Intelligence picker. It
+recognizes the current English and Chinese effort labels, avoids matching
+`高` inside `极高`, and re-queries the composer pill after React replaces it so
+selection verification cannot rely on a detached stale node.
+
+## Compatibility with npm 0.15.2
+
+Do not pass `gpt-5.6` or `gpt-5.6-sol` to an unpatched npm 0.15.2 install. That
+release can normalize those labels to `gpt-5.2`. Use the explicit fallback:
 
 ```bash
-oracle --engine browser --browser-manual-login --browser-keep-browser \
-  --browser-input-timeout 120000 -p "HI"
+npx -y @steipete/oracle@0.15.2 --engine browser --model gpt-5.5-pro \
+  -p "<task>" --file "src/**"
 ```
 
-After setup, all subsequent `--browser-manual-login` runs reuse that profile.
-If the profile goes stale (logged out), re-run the setup command above.
+After upgrading to a release containing the GPT-5.6 model-selection and
+unified-picker changes, verify all of the following before removing the
+fallback guidance: `--help --verbose` exposes the new options, browser dry-run
+resolves both aliases to GPT-5.6 Sol, API routing selects first-party OpenAI,
+and a live browser run records strict GPT-5.6 selection evidence.
 
-## Quick Commands
+## Golden path
 
-```bash
-# Show help (run once per session)
-oracle --help
+1. Pick the smallest file set that still contains the truth.
+2. Preview the bundle with `--dry-run` and `--files-report`.
+3. Use browser mode for GPT-5.6; use API only when explicitly intended.
+4. If a run detaches or times out, reattach to the stored session instead of
+   starting a duplicate.
 
-# Preview bundle without spending tokens
-oracle --dry-run summary -p "<task>" --file "src/**" --file "!**/*.test.*"
+## Commands
 
-# Token/cost sanity check
-oracle --dry-run summary --files-report -p "<task>" --file "src/**"
+- Show help:
+  - `npx -y @steipete/oracle --help --verbose`
 
-# Browser run — cookie DB (primary; close Chrome first)
-unset ORACLE_BROWSER_COOKIES_FILE
-oracle --engine browser \
-  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-  --browser-cookie-wait 10s \
-  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
-  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
-  --model gpt-5.5-pro -p "<task>" --file "src/**"
+- Preview without calling a model:
+  - `npx -y @steipete/oracle --dry-run summary -p "<task>" --file "src/**" --file "!**/*.test.*"`
+  - `npx -y @steipete/oracle --dry-run full -p "<task>" --file "src/**"`
 
-# Browser run — attach to running Chrome (when already open with --remote-debugging-port=9222)
-oracle --engine browser --browser-attach-running \
-  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
-  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
-  --model gpt-5.5-pro -p "<task>" --file "src/**"
+- Inspect token usage:
+  - `npx -y @steipete/oracle --dry-run summary --files-report -p "<task>" --file "src/**"`
 
-# Browser run — manual-login fallback (when cookie DB and attach both fail)
-oracle --engine browser --browser-manual-login \
-  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
-  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
-  --model gpt-5.5-pro -p "<task>" --file "src/**"
+- Browser run:
+  - `oracle --engine browser --model gpt-5.6-sol --browser-thinking-time heavy -p "<task>" --file "src/**"`
 
-# Browser run with output file (cookie DB variant)
-unset ORACLE_BROWSER_COOKIES_FILE
-oracle --engine browser \
-  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-  --browser-cookie-wait 10s \
-  --browser-auto-reattach-delay 30s --browser-auto-reattach-interval 2m \
-  --browser-auto-reattach-timeout 2m --browser-timeout 20m \
-  --model gpt-5.5-pro -p "<task>" --file "src/**" \
-  --write-output /tmp/oracle_output.md --slug "descriptive-slug"
+- Manual paste fallback:
+  - `npx -y @steipete/oracle --render-markdown --copy-markdown -p "<task>" --file "src/**"`
+  - `--render` is an alias for `--render-markdown`.
 
-# Manual paste fallback (assemble bundle, copy to clipboard)
-oracle --render --copy -p "<task>" --file "src/**"
+- Performance trace:
+  - `npx -y @steipete/oracle --perf-trace --perf-trace-path /tmp/oracle-perf.json --dry-run summary -p "<task>" --file "src/**"`
 
-# ChatGPT Project Sources (persistent shared context)
-oracle project-sources list \
-  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-  --browser-cookie-wait 10s \
-  --chatgpt-url "https://chatgpt.com/g/g-p-.../project"
-oracle project-sources add --dry-run \
-  --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-  --browser-cookie-wait 10s \
-  --chatgpt-url "https://chatgpt.com/g/g-p-.../project" \
-  --file AGENTS.md --file README.md --file docs/architecture.md
+## Attaching files
 
-# API provider readiness check
-oracle doctor --providers --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro
-
-# Sessions (list and reattach)
-oracle status --hours 72
-oracle session <id> --render
-oracle restart <id>
-```
-
-### Important Browser Run Notes
-
-- **Primary auth: Chrome cookie DB.** Close Chrome before running — the cookie
-  database is locked while Chrome is open. Oracle will fail to read cookies if
-  Chrome is running. Always clear `ORACLE_BROWSER_COOKIES_FILE` (unset it)
-  before using `--browser-cookie-path`; the env var can conflict with explicit
-  cookie flags and cause misleading failures.
-- **Alternative: attach to running Chrome.** Start Chrome with
-  `--remote-debugging-port=9222`, then use `--browser-attach-running`. This
-  reuses your live, logged-in session. No cookie DB reads needed.
-- **Fallback: manual-login profile.** Use `--browser-manual-login` when both
-  cookie DB and attach-running fail. This uses a separate Chrome profile that
-  requires a one-time manual ChatGPT login. If the profile goes stale, re-run
-  the setup: `oracle --engine browser --browser-manual-login --browser-keep-browser
-  --browser-input-timeout 120000 -p "HI"`.
-- Treat `--browser-cookie-path`, `--browser-chrome-profile`, and
-  `--browser-manual-login` as separate auth paths. One can be logged in while
-  another fails. Never mix them in a single command.
-- **Always auth-probe first.** Before any substantial browser-mode run, execute
-  a tiny auth test: `-p "Quick auth test. Reply with OK."`. Only proceed with
-  the full prompt after it returns `OK`. This saves you from waiting 10-20
-  minutes only to discover a login failure.
-- Before a substantial browser-mode consult, try to identify a ChatGPT Project
-  for the current directory and use it as shared context. Check, in order:
-  the user prompt, directory-local docs/config (`AGENTS.md`, `README*`, `docs/**`,
-  `.oracle*`) for `https://chatgpt.com/g/.../project`, `~/.oracle/config.json`
-  (`browser.chatgptUrl` or `browser.url`), and recent Oracle/browser URL
-  history. A valid Project URL ends in `/project`, e.g.
-  `https://chatgpt.com/g/g-p-.../project`.
-- If no Project exists for the directory, create or obtain one before repeated
-  Oracle work. Current Oracle CLI support can list/add Project Sources but does
-  not expose a `create project` command. If a browser/UI automation tool that can
-  create ChatGPT Projects is available, create a Project named after the
-  directory/repo; otherwise ask the user to create it in ChatGPT and provide the
-  `/project` URL. Save the URL in `~/.oracle/config.json` as
-  `browser.chatgptUrl` or pass it with `--chatgpt-url`.
-- Seed a new Project with durable context that will help all future sessions:
-  root instructions (`AGENTS.md`, `CLAUDE.md`), `README*`, architecture/design
-  docs, package/build/test config, benchmark specs, API schemas, and stable
-  domain notes. Do not upload secrets, generated artifacts, large vendored
-  trees, logs, datasets, caches, or temporary files.
-- Run `oracle project-sources add ... --dry-run` first. Only run without
-  `--dry-run` after reviewing the planned uploads; Project Sources are
-  persistent and Oracle v1 is append-only (no delete/replace/sync command).
-- Always add auto-reattach flags for GPT-5.5 Pro runs (>60K tokens) — they
-  can take 10-20 minutes and the CLI may lose the tab connection.
-- If a run times out, do NOT re-run; reattach with `oracle session <id> --render`.
-- Use `--force` if Oracle warns about a duplicate prompt (different context is fine).
-- API mode is NOT used in this repo (user preference).
-
-### Browser Auth Troubleshooting
-
-**Cookie DB failures (most common)**
-
-- **Chrome is running → cookie DB locked.**
-  Symptom: oracle hangs or fails with an empty/inaccessible cookie DB.
-  Fix: quit Chrome completely (`Cmd+Q`), then re-run. The cookie DB is
-  exclusively locked while Chrome is open.
-- **`ORACLE_BROWSER_COOKIES_FILE` env var set → conflicts with explicit flags.**
-  Symptom: `--browser-cookie-path` appears ignored; oracle launches a fresh
-  unauthenticated Chrome.
-  Fix: `unset ORACLE_BROWSER_COOKIES_FILE` before the command. This env var
-  shadows explicit `--browser-cookie-path` and can cause confusing failures.
-- **Wrong cookie DB path.**
-  Symptom: oracle reports no cookies found, or launches unauthenticated.
-  Fix: verify the path — on macOS it's
-  `"$HOME/Library/Application Support/Google/Chrome/Default/Cookies"`. For
-  non-Default profiles, replace `Default` with the profile directory name
-  (e.g. `Profile 1`). Use `--browser-cookie-wait 10s` to handle transient
-  locks from background Chrome processes.
-- **Cookies expired or signed out.**
-  Symptom: auth probe returns a login wall instead of `OK`.
-  Fix: open Chrome normally, sign into ChatGPT, close Chrome, then retry
-  with cookie DB. If the session was expired, a fresh login is needed.
-
-**Attach-running failures**
-
-- **Chrome not started with remote debugging.**
-  Symptom: `--browser-attach-running` can't connect.
-  Fix: quit Chrome, relaunch with `open -a "Google Chrome" --args
-  --remote-debugging-port=9222`, verify with `curl http://127.0.0.1:9222/json`.
-- **Wrong port.**
-  Symptom: connection refused on 9222.
-  Fix: check the port Chrome is using. Oracle defaults to 9222; override with
-  `--remote-chrome 127.0.0.1:<port>`.
-
-**Manual-login failures**
-
-- **Profile logged out / stale.**
-  Symptom: Chrome opens but ChatGPT shows a login screen.
-  Fix: re-run the one-time setup:
-  `oracle --engine browser --browser-manual-login --browser-keep-browser --browser-input-timeout 120000 -p "HI"`.
-  Log in manually in the opened window, then let the command complete.
-- **`setTypeOfService EINVAL`.**
-  Symptom: macOS Keychain permission prompt blocked.
-  Fix: switch to cookie DB auth (close Chrome, unset
-  `ORACLE_BROWSER_COOKIES_FILE`, use `--browser-cookie-path`). This error
-  is specific to Keychain-based cookie access and does not occur with
-  explicit cookie DB paths.
-
-**General**
-
-- **Mixing auth flags.** Don't combine `--browser-manual-login` with
-  `--browser-cookie-path` or `--browser-attach-running`. Pick one auth
-  path per command. Conflicting flags produce unpredictable results.
-- **Project sources auth mismatch.** Project sources commands (list/add)
-  use the same auth flags as runs. If `project-sources list` works but a
-  full run fails, the auth flags likely differ between the two commands —
-  copy the exact flags that worked.
-
-## Attaching Files (`--file`)
+`--file` accepts files, directories, and globs. Pass it multiple times or use
+comma-separated entries.
 
 - Include: `--file "src/**"`, `--file src/index.ts`, `--file docs --file README.md`
-- Exclude: `--file "src/**" --file "!src/**/*.test.ts" --file "!**/*.snap"`
-- Default-ignored: `node_modules`, `dist`, `coverage`, `.git`, `.turbo`, `.next`, `build`, `tmp`
-- Honors `.gitignore`; dotfiles filtered by default; files > 1 MB rejected
-- Target: keep total input under ~196k tokens
+- Exclude: prefix a pattern with `!`, for example `--file "!src/**/*.test.ts"`
+- Default ignored directories: `node_modules`, `dist`, `coverage`, `.git`,
+  `.turbo`, `.next`, `build`, and `tmp`
+- Globs honor `.gitignore` and do not follow symlinks.
+- Dotfiles require an explicit dot-segment in the pattern, such as
+  `--file ".github/**"`.
+- Files over 1 MB are rejected by default; configure
+  `ORACLE_MAX_FILE_SIZE_BYTES` or `maxFileSizeBytes` when necessary.
 
-## Prompt Template
+Keep total input under roughly 196k tokens. Use `--files-report` or
+`--dry-run json` to identify oversized inputs. Never attach `.env` files,
+private keys, auth tokens, or other secrets unless they have been redacted and
+are essential to the question.
 
-For one-shot runs, Oracle starts with **zero** project knowledge. If browser
-mode is pointed at a ChatGPT Project, still include the task-specific context;
-the Project is shared background, not a replacement for a precise prompt.
-Include:
+## Engines and browser controls
 
-1. **Project briefing**: stack, build/test commands, platform constraints
-2. **File map**: key directories, entrypoints, config files, dependency boundaries
-3. **Exact question**: what you tried, error text (verbatim), constraints
-4. **Desired output**: "return patch plan + tests", "list risky assumptions", "give 3 options with tradeoffs"
+- Auto-selection uses API when `OPENAI_API_KEY` is set and browser otherwise.
+- Browser supports GPT models through ChatGPT and Gemini models through Gemini
+  web. API-only models include `gpt-5.1-codex`.
+- Current model families include GPT-5.5/5.4/5.2/5.1, Gemini 3.x, and Claude
+  4.x; availability depends on engine and provider.
+- API runs require explicit user consent because they may incur usage costs.
+- Browser attachments use `--browser-attachments auto|never|always`.
+- For many files, add `--browser-bundle-files --browser-bundle-format auto|zip`.
+- Reuse an existing Chrome session with `--browser-tab <ref>`,
+  `--browser-attach-running`, or `--remote-chrome <host:port>`.
+- Use `--browser-model-strategy select|current|ignore` to control picker
+  behavior.
+- Use `--browser-follow-up "<prompt>"` for another turn in the same browser
+  conversation, or `--followup <sessionId|responseId>` for a stored run.
+- Use `--browser-research deep` only when Deep Research is explicitly wanted.
 
-## Engines
+## API preflight
 
-- **Browser** (default when no `OPENAI_API_KEY`): automates ChatGPT in Chrome. Supports GPT and Gemini. Stable on macOS.
-- **API**: requires `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` in env. Supports all models including Claude, Grok, Codex.
-- API runs require explicit user consent before starting (they cost money).
+Before an API run, check provider readiness without printing secrets:
 
-## ChatGPT Project Workflow
+```bash
+oracle doctor --providers --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro
+oracle --preflight --models gpt-5.4,gemini-3-pro
+oracle --route --model gpt-5.4
+```
 
-Use a ChatGPT Project for any repo or directory that will need repeated Oracle
-sessions. The goal is to avoid re-uploading stable context and to keep related
-Oracle chats grouped.
+Use `--provider openai` or `--no-azure` when first-party OpenAI routing is
+required. For multi-model panels where partial success is useful, use
+`--allow-partial --write-output <path>` so successful outputs and the manifest
+can be recovered.
 
-1. Identify the target directory/repo name and search for an existing Project
-   URL in directory-local context first:
-   ```bash
-   rg -n "https://chatgpt\\.com/g/[^[:space:]\")]+/project" \
-     AGENTS.md README* docs .oracle* 2>/dev/null
-   ```
-   Then check the global Oracle config:
-   ```bash
-   jq -r '.browser.chatgptUrl // .browser.url // empty' ~/.oracle/config.json
-   ```
-2. If a Project URL exists, verify it:
-   ```bash
-   oracle project-sources list \
-     --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-     --browser-cookie-wait 10s \
-     --chatgpt-url "<project-url>"
-   ```
-3. If no Project URL exists, create a ChatGPT Project for that directory in the
-   ChatGPT UI, copy the URL ending in `/project`, and either add it to
-   `~/.oracle/config.json`:
-   ```json
-   {
-     "engine": "browser",
-     "browser": {
-       "chatgptUrl": "https://chatgpt.com/g/g-p-.../project",
-       "cookiePath": "/Users/abf/Library/Application Support/Google/Chrome/Default/Cookies"
-     }
-   }
-   ```
-   or pass it per run with `--chatgpt-url`.
-4. Choose Project Sources conservatively. Prefer durable, high-signal files:
-   repo instructions, README, architecture docs, dependency manifests, test
-   commands, API/schema docs, benchmark/evaluation specs, and core domain notes.
-5. Preview uploads:
-   ```bash
-   oracle project-sources add --dry-run \
-     --browser-cookie-path "$HOME/Library/Application Support/Google/Chrome/Default/Cookies" \
-     --browser-cookie-wait 10s \
-     --chatgpt-url "<project-url>" \
-     --file AGENTS.md --file README.md --file docs/architecture.md
-   ```
-6. If the dry run is correct and the user has approved the persistent mutation,
-   repeat without `--dry-run`.
-7. For future browser consults, include `--chatgpt-url "<project-url>"` unless
-   it is configured globally. Continue attaching task-specific files with
-   `--file`; Project Sources are shared background context, not a substitute for
-   the exact code under review.
+Set an explicit deadline for automation, for example `--timeout 10m`; Oracle
+derives the HTTP timeout unless `--http-timeout` is supplied.
 
-## Sessions
+## Sessions and recovery
 
-- Stored under `~/.oracle/sessions`
-- If CLI times out: **do not re-run** — reattach with `oracle session <id> --render`
-- Use `--slug "<3-5 words>"` for readable session IDs
-- Duplicate prompt guard: use `--force` to override
+- Sessions are stored under `~/.oracle/sessions`; override with
+  `ORACLE_HOME_DIR`.
+- Browser artifacts include `transcript.md` and, when available, research
+  reports and generated images.
+- List recent sessions with `oracle status --hours 72`.
+- Attach with `oracle session <id> --render`.
+- Use `--slug "<3-5 words>"` for readable session IDs.
+- If a run times out, reattach; do not re-run it. Use `--force` only when a
+  genuinely new identical run is intended.
+- Successful non-project browser one-shots are archived automatically by
+  default; override with `--browser-archive never|always`.
 
-## Safety
+## Prompt template
 
-- Don't attach secrets (`.env`, key files, auth tokens)
-- Prefer "just enough context": fewer files + better prompt beats whole-repo dumps
-- Verify outputs against the codebase and tests — oracle is advisory, not authoritative
+Oracle starts with zero project knowledge. Include:
+
+- Project briefing: stack, services, build/test commands, and platform constraints
+- Where things live: entrypoints, configs, key modules, and dependency boundaries
+- Exact question, prior attempts, and verbatim error text
+- Constraints such as API compatibility, performance budgets, and files not to change
+- Desired output such as a patch plan, tests, risk list, or tradeoff comparison
+
+For a long investigation, make the prompt restorable: put a 6–30 sentence
+briefing at the top, concrete reproduction and errors in the middle, and attach
+all context files required by a fresh model at the bottom. Oracle runs are
+one-shot; the model does not remember prior runs.
