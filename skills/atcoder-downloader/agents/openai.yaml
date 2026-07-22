@@ -1,0 +1,4 @@
+interface:
+  display_name: "AtCoder Downloader"
+  short_description: "Download top solutions from AtCoder contests"
+  default_prompt: "Download the best submissions from an AtCoder contest"
