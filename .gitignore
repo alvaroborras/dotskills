@@ -7,6 +7,9 @@ skills/.system/
 # Environment files
 .env
 
+# Oracle browser run artifacts
+/artifacts/oracle/
+
 # Python
 __pycache__/
 *.py[cod]
