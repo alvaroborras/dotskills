@@ -10,6 +10,11 @@ model can answer with real repository context through the API or browser. A
 prompt is required; attach files only when they add necessary context. Treat
 responses as advisory and verify them against the codebase and tests.
 
+Long-form browser research responses may take up to two hours. A wrapper or
+assistant-capture timeout near 40 minutes is not evidence that the model answer
+was lost or complete: preserve the same submitted session and reattach
+passively.
+
 ## Quick start
 
 Install globally: `npm install -g @steipete/oracle`
@@ -321,8 +326,10 @@ not scold, duplicate, or try to repair the stale local session.
 
 After submission, keep the same bounded watcher polling the exact conversation
 every 30 seconds and records only transitions (`submitted`, `thinking`,
-`completed`, `errored`). Do not spend a sequence of agent turns issuing long
-sleep commands. The watcher must be read-only: never click `Answer now`,
+`completed`, `errored`). For long-form research, allow up to two hours for
+completion: use `--completion-timeout 7200` with `watch-browser.py` and
+`--timeout 2h` with the Oracle wrapper. Do not spend a sequence of agent turns
+issuing long sleep commands. The watcher must be read-only: never click `Answer now`,
 `Stop answering`, `Continue`, `Regenerate`, or similar controls.
 
 Completion requires all of the following:
@@ -629,8 +636,10 @@ required. For multi-model panels where partial success is useful, use
 `--allow-partial --write-output <path>` so successful outputs and the manifest
 can be recovered.
 
-Set an explicit deadline for automation, for example `--timeout 10m`; Oracle
-derives the HTTP timeout unless `--http-timeout` is supplied.
+Set an explicit deadline for automation. Use `--timeout 2h` for long-form
+browser research; shorter deadlines are appropriate only for intentionally
+short reviews. Oracle derives the HTTP timeout unless `--http-timeout` is
+supplied.
 
 ## Sessions and recovery
 
@@ -666,6 +675,10 @@ Recovery procedure:
 4. If harvest returns only a short planning preamble and the session is still
    running or stalled, treat the answer as not ready. Wait and harvest the same
    session again later.
+   If the wrapper reports `Assistant response timed out before completion` near
+   40 minutes, classify the session as stalled rather than terminal. Do not
+   relaunch the prompt; reattach to the same session and continue passive
+   monitoring for the full two-hour response window.
 5. When a complete answer is harvested, preserve the raw harvest and extract a
    clean assistant answer to a separate file before writing any curated summary.
 6. If the browser shows `Answer now`, `Continue`, `Resume`, `Regenerate`,
