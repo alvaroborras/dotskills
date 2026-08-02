@@ -27,3 +27,7 @@ build/
 *.swo
 
 .opencode/
+
+# Generated Kaggle skill data (downloaded databases and notebooks)
+/skills/nvidia-kaggle-skill/data/*.db
+/skills/nvidia-kaggle-skill/data/notebooks/
