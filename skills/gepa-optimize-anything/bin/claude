@@ -1,0 +1,81 @@
+#!/home/alvaro/.agents/skills/gepa-optimize-anything/.venv/bin/python
+"""Codex/OpenCode compatibility shim for GEPA's Claude CLI contract."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from typing import Any
+
+
+def value(argv: list[str], flag: str) -> str | None:
+    try:
+        return argv[argv.index(flag) + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def text(value_: Any) -> str:
+    if isinstance(value_, str):
+        return value_
+    if isinstance(value_, dict):
+        for key in ("text", "content", "message", "result"):
+            if key in value_:
+                found = text(value_[key])
+                if found:
+                    return found
+    if isinstance(value_, list):
+        return "".join(text(item) for item in value_)
+    return ""
+
+
+argv = sys.argv[1:]
+prompt = value(argv, "--print")
+if prompt is None:
+    print("gepa agent shim only supports Claude's --print mode", file=sys.stderr)
+    raise SystemExit(2)
+backend = os.environ.get("GEPA_AGENT_BACKEND", "codex").lower()
+if backend == "codex":
+    executable = os.environ.get("CODEX_BIN") or shutil.which("codex")
+    if not executable:
+        print("gepa Codex shim: `codex` was not found on PATH", file=sys.stderr)
+        raise SystemExit(127)
+    command = [executable, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", os.getcwd()]
+    model = os.environ.get("GEPA_CODEX_MODEL")
+    if model:
+        command += ["--model", model]
+else:
+    executable = os.environ.get("OPENCODE_BIN") or shutil.which("opencode")
+    if not executable:
+        print("gepa OpenCode shim: `opencode` was not found on PATH", file=sys.stderr)
+        raise SystemExit(127)
+    command = [executable, "run", "--format", "json", "--auto", "--dir", os.getcwd()]
+    model = os.environ.get("GEPA_OPENCODE_MODEL") or value(argv, "--model")
+    if model:
+        command += ["--model", model]
+command.append(prompt)
+completed = subprocess.run(command, capture_output=True, text=True)
+parts: list[str] = []
+for line in completed.stdout.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if backend == "codex":
+        item = event.get("item") if isinstance(event, dict) else None
+        part = text(item) if isinstance(item, dict) and item.get("type") == "agent_message" else ""
+        if event.get("type") == "response.output_text.done":
+            part = text(event)
+    else:
+        part = text(event)
+    if part:
+        parts.append(part)
+print(json.dumps({
+    "type": "result", "result": "".join(parts),
+    "is_error": completed.returncode != 0, "total_cost_usd": 0.0, "usage": {},
+}))
+if completed.returncode:
+    print(completed.stderr[-4000:], file=sys.stderr, end="")
+raise SystemExit(completed.returncode)
