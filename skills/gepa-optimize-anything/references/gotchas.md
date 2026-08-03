@@ -43,12 +43,15 @@ block, and old-API keys (`claude_code_agent`, top-level `reflection_lm_kwargs`, 
 `background` inside `engine_config`) now crash. See `api.md` for each backend's valid keys.
 
 ## 6. Agentic backends have launch-time prerequisites
-`autoresearch` / `meta_harness` `subprocess.Popen(["claude", ...])`. A missing `claude` CLI — or, on
+`autoresearch` / `meta_harness` launch `claude --print`, which this skill supplies as a
+Codex/OpenCode compatibility shim (there is no native Claude mode). A missing selected CLI — or, on
 Linux, a missing `bwrap` (bubblewrap) while the default `sandbox=True` is in effect — aborts the run
-at launch with a boxed message and install instructions (`npm install -g @anthropic-ai/claude-code`;
-`sudo apt/dnf install bubblewrap`). An *unauthenticated* CLI or a missing `jq` (used by
-autoresearch's generated `eval.sh`) still surfaces only mid-run, and `sandbox=False` runs the agent
-unconfined (loud warning) — so run `scripts/preflight.py` first either way.
+at launch. An *unauthenticated* CLI or a missing `jq` (used by autoresearch's generated `eval.sh`)
+still surfaces only mid-run, and `sandbox=False` runs the agent unconfined (loud warning) — so run
+`scripts/preflight.py --engine autoresearch` first either way. That check prepares and reports only
+the selected backend's narrow state paths. The shim independently accepts only
+`GEPA_AGENT_BACKEND=codex` or `opencode`; `claude` and unknown values fail before
+any backend CLI can be invoked, including with `sandbox=False`.
 
 ## 7. Give runs a real stop condition (`stop_at_score` / `max_token_cost`)
 `max_evals` caps eval calls, but two situations still burn money or time past the point of useful

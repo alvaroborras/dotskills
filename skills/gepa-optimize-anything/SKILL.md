@@ -95,9 +95,19 @@ pip install "gepa[full]"   # [full] pulls cloudpickle — needed to pickle closu
 # Agentic backends use the bundled Codex/OpenCode compatibility shim. Put it first on PATH:
 export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
 # Codex is the default backend; set GEPA_AGENT_BACKEND=opencode to use OpenCode instead.
-# Authenticate the selected CLI and optionally set GEPA_CODEX_MODEL or GEPA_OPENCODE_MODEL.
+# Agentic engines never call native Claude: the skill shim re-execs Codex/OpenCode.
+# Default model is gpt-5.6-luna (override with GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL).
+# Authenticate the selected CLI before long runs.
 # `jq` is needed by the generated eval.sh, and Linux sandboxing needs bubblewrap.
 # Pass sandbox=False only if you intentionally want to run the agent unconfined.
+# Before an agentic run, use `scripts/preflight.py --engine autoresearch`.
+# It prepares only selected-backend state: `~/.codex` for Codex or OpenCode's
+# exact config/data/cache directories. The shim has no native Claude mode.
+# After refreshing this skill's venv, run `scripts/reapply_backend_sandbox.py
+# --apply`, then rerun it without `--apply` to verify the skill-owned runtime
+# overlay. It does not rewrite GEPA or uv-cache package files.
+# Run `scripts/quick_validate.py` to rerun the structural checks and harmless
+# in-jail shim probe; it never starts an optimizer or makes a model call.
 ```
 
 ## Mental model (4 pieces)

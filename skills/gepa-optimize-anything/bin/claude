@@ -7,14 +7,101 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 
-def value(argv: list[str], flag: str) -> str | None:
-    try:
-        return argv[argv.index(flag) + 1]
-    except (ValueError, IndexError):
-        return None
+VALUE_FLAGS = frozenset({
+    "--allowedTools",
+    "--append-system-prompt",
+    "--disallowedTools",
+    "--effort",
+    "--max-budget-usd",
+    "--max-turns",
+    "--model",
+    "--output-format",
+    "--permission-mode",
+    "--resume",
+    "--session-id",
+    "--settings",
+    "--system-prompt",
+    "--system-prompt-file",
+})
+BOOLEAN_FLAGS = frozenset({
+    "--continue",
+    "--dangerously-skip-permissions",
+    "--fork-session",
+    "--include-partial-messages",
+    "--no-session-persistence",
+    "--print",
+    "--strict-mcp-config",
+    "--verbose",
+})
+
+
+class ClaudeArgumentError(ValueError):
+    """An unsupported Claude Code argument was supplied to the shim."""
+
+
+def parse_claude_request(argv: list[str]) -> tuple[str, str | None, str | None]:
+    """Extract the printable prompt and optional system instructions.
+
+    GEPA invokes Claude as ``claude --print --output-format json ... PROMPT``.
+    In particular, ``--print`` is a boolean: treating its following token as
+    a prompt sends ``--output-format`` to Codex as a positional argument.
+    Claude-only controls are deliberately consumed here; the shim itself
+    emits GEPA's single JSON result envelope, so ``--output-format`` must not
+    be translated to Codex's unrelated ``--output-schema`` option.
+    """
+    printed = False
+    prompt_parts: list[str] = []
+    system_parts: list[str] = []
+    claude_model: str | None = None
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            prompt_parts.extend(argv[index + 1:])
+            break
+        if argument in BOOLEAN_FLAGS:
+            printed = printed or argument == "--print"
+            index += 1
+            continue
+        flag, equals, supplied = argument.partition("=")
+        if flag in VALUE_FLAGS:
+            if equals:
+                value = supplied
+            else:
+                index += 1
+                if index >= len(argv):
+                    raise ClaudeArgumentError(f"Claude option {flag} requires a value")
+                value = argv[index]
+            if flag == "--system-prompt":
+                system_parts = [value]
+            elif flag == "--append-system-prompt":
+                system_parts.append(value)
+            elif flag == "--system-prompt-file":
+                try:
+                    system_parts = [Path(value).read_text(encoding="utf-8")]
+                except OSError as exc:
+                    raise ClaudeArgumentError(f"cannot read {flag} file {value!r}: {exc}") from exc
+            elif flag == "--model":
+                claude_model = value
+            # Model, max-turn, session, permissions, budget, and output-format
+            # are provider-specific Claude controls. Codex/OpenCode do not
+            # share their semantics, so consume them rather than forwarding
+            # invalid flags. Adapter-specific model env vars are handled below.
+            index += 1
+            continue
+        if argument.startswith("-"):
+            raise ClaudeArgumentError(f"unsupported Claude option: {argument}")
+        prompt_parts.append(argument)
+        index += 1
+    if not printed:
+        raise ClaudeArgumentError("only supports Claude's --print mode")
+    if not prompt_parts:
+        raise ClaudeArgumentError("Claude --print requires a prompt")
+    return " ".join(prompt_parts), "\n\n".join(part for part in system_parts if part), claude_model
 
 
 def text(value_: Any) -> str:
@@ -31,32 +118,77 @@ def text(value_: Any) -> str:
     return ""
 
 
-argv = sys.argv[1:]
-prompt = value(argv, "--print")
-if prompt is None:
+if "--print" not in sys.argv[1:]:
     print("gepa agent shim only supports Claude's --print mode", file=sys.stderr)
     raise SystemExit(2)
+try:
+    prompt, system_prompt, claude_model = parse_claude_request(sys.argv[1:])
+except ClaudeArgumentError as exc:
+    print(f"gepa agent shim {exc}", file=sys.stderr)
+    raise SystemExit(2)
+if system_prompt:
+    prompt = f"{system_prompt}\n\n{prompt}"
 backend = os.environ.get("GEPA_AGENT_BACKEND", "codex").lower()
+if backend not in {"codex", "opencode"}:
+    print(
+        f"gepa agent shim: unsupported GEPA_AGENT_BACKEND={backend!r}; expected 'codex' or 'opencode'",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+def _resolve_model(preferred: str | None, fallback: str | None) -> str | None:
+    """Prefer backend-specific env, then caller model, then skill default.
+
+    Claude-only nicknames (sonnet/opus/haiku and anthropic ids) are ignored so
+    Codex/OpenCode never receive an invalid model id from GEPA defaults.
+    """
+    claude_like = {
+        "sonnet",
+        "opus",
+        "haiku",
+        "claude-sonnet-4-6",
+        "claude-opus-4",
+        "claude-haiku-4",
+    }
+    for candidate in (preferred, fallback, os.environ.get("GEPA_DEFAULT_MODEL"), "gpt-5.6-luna"):
+        if not candidate:
+            continue
+        lowered = candidate.strip().lower()
+        if lowered in claude_like or lowered.startswith("claude") or lowered.startswith("anthropic/"):
+            continue
+        return candidate
+    return "gpt-5.6-luna"
+
+
 if backend == "codex":
     executable = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if not executable:
         print("gepa Codex shim: `codex` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
     command = [executable, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", os.getcwd()]
-    model = os.environ.get("GEPA_CODEX_MODEL")
+    model = _resolve_model(os.environ.get("GEPA_CODEX_MODEL"), claude_model)
     if model:
         command += ["--model", model]
-else:
+    # Use stdin rather than a positional prompt so any prompt beginning with
+    # dashes is unambiguously data. This is also where system-prompt content
+    # is carried, since Codex has no Claude-equivalent system-prompt flag.
+    command.append("-")
+else:  # backend == "opencode" (validated above)
     executable = os.environ.get("OPENCODE_BIN") or shutil.which("opencode")
     if not executable:
         print("gepa OpenCode shim: `opencode` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
     command = [executable, "run", "--format", "json", "--auto", "--dir", os.getcwd()]
-    model = os.environ.get("GEPA_OPENCODE_MODEL") or value(argv, "--model")
+    model = _resolve_model(os.environ.get("GEPA_OPENCODE_MODEL"), claude_model)
     if model:
         command += ["--model", model]
-command.append(prompt)
-completed = subprocess.run(command, capture_output=True, text=True)
+    command.append(prompt)
+completed = subprocess.run(
+    command,
+    capture_output=True,
+    check=False,
+    input=prompt if backend == "codex" else None,
+    text=True,
+)
 parts: list[str] = []
 for line in completed.stdout.splitlines():
     try:
