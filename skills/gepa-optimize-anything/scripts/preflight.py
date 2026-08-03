@@ -3,7 +3,7 @@
 
     python preflight.py                      # checks gepa + reflection-LM creds
     python preflight.py --engine autoresearch  # also checks Codex/OpenCode shim + jq
-    GEPA_REFLECTION_LM=anthropic/claude-sonnet-4-6 python preflight.py --test-lm
+    GEPA_REFLECTION_LM=openai/gpt-5.1 python preflight.py --test-lm
 
 Exit code 0 = all good; non-zero = at least one blocker.
 """
@@ -19,6 +19,8 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_MARKER = "_GEPA_SKILL_PREFLIGHT_RUNTIME"
+# Basename GEPA engines resolve on PATH (upstream hardcode); skill ships the shim here.
+_AGENT_ENTRY = "claude"
 
 
 def _skill_python() -> Path:
@@ -74,9 +76,8 @@ from backend_state import prepare, selected_backend
 OK, BAD = "\033[32mOK\033[0m", "\033[31mFAIL\033[0m"
 problems: list[str] = []
 
-# The gepa backend's reflection LM defaults to openai/gpt-5.1; best_of_n's
-# sampling model defaults to claude-sonnet-4-6 (see references/api.md).
-DEFAULT_LM_BY_ENGINE = {"gepa": "openai/gpt-5.1", "best_of_n": "claude-sonnet-4-6"}
+# In-process engines: gepa reflection default; best_of_n should set model explicitly.
+DEFAULT_LM_BY_ENGINE = {"gepa": "openai/gpt-5.1", "best_of_n": "openai/gpt-5.1"}
 
 
 def check(label: str, ok: bool, fix: str = "") -> None:
@@ -96,9 +97,8 @@ def _creds_for(lm: str) -> tuple[bool, str]:
         return has_aws, "export AWS creds (AWS_BEARER_TOKEN_BEDROCK / AWS_ACCESS_KEY_ID / AWS_PROFILE)"
     if lm.startswith("openai/") or lm.startswith("gpt-") or "gpt-5" in lm:
         return bool(os.environ.get("OPENAI_API_KEY")), "export OPENAI_API_KEY"
-    if "claude" in lm or lm.startswith("anthropic/"):
+    if lm.startswith("anthropic/") or "claude" in lm:
         return bool(os.environ.get("ANTHROPIC_API_KEY")) or has_aws, "export ANTHROPIC_API_KEY (or AWS creds)"
-    # Unknown provider: accept any common key being present.
     any_key = bool(
         os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or has_aws
     )
@@ -117,7 +117,7 @@ def _probe_shim_in_bwrap(backend: str) -> tuple[bool, str]:
         from gepa.oa.sandbox import bwrap_prefix
 
         result = subprocess.run(
-            [*bwrap_prefix(Path.cwd(), backend=backend), "claude", "--unsupported-probe"],
+            [*bwrap_prefix(Path.cwd(), backend=backend), _AGENT_ENTRY, "--unsupported-probe"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -127,7 +127,7 @@ def _probe_shim_in_bwrap(backend: str) -> tuple[bool, str]:
     # The shim exits 2 before selecting/running any backend for unsupported
     # arguments. That exact failure proves both PATH resolution and shebang
     # interpreter availability without consuming model tokens.
-    reached_shim = result.returncode == 2 and "only supports Claude's --print mode" in result.stderr
+    reached_shim = result.returncode == 2 and "only supports --print mode" in result.stderr
     return reached_shim, (result.stderr or result.stdout).strip()[-300:]
 
 
@@ -141,6 +141,7 @@ def _verify_agentic_caller_aliases() -> tuple[bool, str]:
             autoresearch.bwrap_prefix is sandbox.bwrap_prefix
             and meta_harness.bwrap_prefix is sandbox.bwrap_prefix
             and sandbox.bwrap_prefix.__module__ == "gepa_skill_backend_sandbox_overlay"
+            and getattr(sandbox, "GEPA_SKILL_BACKEND_OVERLAY", "") >= "GEPA_SKILL_BACKEND_OVERLAY_V3"
         )
         return ok, "" if ok else "agentic engine retained an unpatched bwrap_prefix alias"
     except (ImportError, AttributeError) as exc:
@@ -176,10 +177,10 @@ def main() -> int:
         ok, fix = _creds_for(effective_lm)
         check(f"LLM creds present for '{effective_lm}'", ok, fix)
 
-    # 3) agentic engines use the bundled Codex/OpenCode-compatible `claude` shim.
+    # 3) agentic engines use the bundled Codex/OpenCode shim only.
     if a.engine in ("autoresearch", "meta_harness"):
         skill_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        shim = os.path.join(skill_root, "bin", "claude")
+        shim = os.path.join(skill_root, "bin", _AGENT_ENTRY)
         try:
             backend = selected_backend()
             state = prepare(backend)
@@ -198,15 +199,18 @@ def main() -> int:
         executable = _configured_cli(backend)
         check(f"{backend.title()} CLI on PATH (required by {a.engine})", bool(executable),
               f"install {backend.title()} and authenticate a provider")
-        check("bundled GEPA OpenCode compatibility shim", os.path.isfile(shim),
+        check("bundled Codex/OpenCode agent shim", os.path.isfile(shim),
               f"restore {shim}")
+        if not os.path.isdir(os.path.join(skill_root, ".venv")):
+            check("skill virtualenv present", False,
+                  f"create {skill_root}/.venv and pip install 'gepa[full]', then reapply overlay")
         aliases_ok, aliases_detail = _verify_agentic_caller_aliases()
         check("AutoResearch/MetaHarness use the installed sandbox overlay", aliases_ok, aliases_detail)
         if a.engine == "autoresearch":
             check("`jq` on PATH (used by the generated eval.sh)", bool(shutil.which("jq")),
                   "install jq")
         if sys.platform.startswith("linux"):
-            check("`bwrap` on PATH (default sandbox=True jails claude with bubblewrap)",
+            check("`bwrap` on PATH (default sandbox=True jails agent with bubblewrap)",
                   bool(shutil.which("bwrap")),
                   "sudo apt/dnf install bubblewrap, or pass sandbox=False (runs unconfined)")
             if shutil.which("bwrap") and executable:

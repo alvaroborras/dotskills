@@ -13,16 +13,17 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv" / "bin" / "python"
 OVERLAY = ROOT / "scripts" / "backend_sandbox_overlay.py"
-STATE = ROOT / "scripts" / "backend_state.py"
 REAPPLY = ROOT / "scripts" / "reapply_backend_sandbox.py"
 PREFLIGHT = ROOT / "scripts" / "preflight.py"
-SHIM = ROOT / "bin" / "claude"
+# Basename GEPA engines resolve on PATH (upstream hardcode).
+AGENT_ENTRY = "claude"
+SHIM = ROOT / "bin" / AGENT_ENTRY
 
 
 def load_overlay():
@@ -118,7 +119,7 @@ class BackendSandboxTests(unittest.TestCase):
         text = " ".join(args)
         self.assertIn(str(self.home / ".codex"), text)
         self.assertIn(str(executable.resolve()), text)
-        for forbidden in (".claude", ".opencode", ".config/opencode", ".local/share/opencode", ".cache/opencode"):
+        for forbidden in (".opencode", ".config/opencode", ".local/share/opencode", ".cache/opencode"):
             self.assertNotIn(forbidden, text)
         self.assertNotIn(str(self.home / ".local"), args)
         self.assertNotIn(str(self.home / ".cache"), args)
@@ -131,16 +132,15 @@ class BackendSandboxTests(unittest.TestCase):
         for relative in (".config/opencode", ".local/share/opencode", ".cache/opencode", ".opencode"):
             self.assertIn(str(self.home / relative), text)
         self.assertNotIn(str(self.home / ".codex"), text)
-        self.assertNotIn(".claude", text)
 
-    def test_unsupported_claude_backend_fails_closed(self) -> None:
+    def test_unsupported_backend_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unsupported"):
-            self.overlay.selected_backend("claude")
+            self.overlay.selected_backend("native")
 
-    def test_shim_fails_closed_for_native_claude_and_unknown_backends(self) -> None:
-        for backend in ("claude", "unknown"):
+    def test_shim_fails_closed_for_unknown_backends(self) -> None:
+        for backend in ("native", "unknown"):
             completed = subprocess.run(
-                [str(ROOT / "bin" / "claude"), "--print", "no-model-call"],
+                [str(SHIM), "--print", "no-model-call"],
                 env={
                     **os.environ,
                     "GEPA_AGENT_BACKEND": backend,
@@ -156,7 +156,7 @@ class BackendSandboxTests(unittest.TestCase):
                 self.assertEqual(completed.stdout, "")
                 self.assertIn("unsupported GEPA_AGENT_BACKEND", completed.stderr)
 
-    def test_codex_shim_consumes_autoresearch_claude_flags_and_emits_result_envelope(self) -> None:
+    def test_codex_shim_consumes_upstream_flags_and_emits_result_envelope(self) -> None:
         arguments = self.root / "codex-argv.txt"
         stdin = self.root / "codex-stdin.txt"
         executable = self._capturing_codex(arguments, stdin)
@@ -166,13 +166,13 @@ class BackendSandboxTests(unittest.TestCase):
                 str(SHIM),
                 "--print",
                 "--output-format", "json",
-                "--model", "claude-sonnet-4-6",
+                "--model", "sonnet",
                 "--system-prompt", "Base system instruction",
                 "--append-system-prompt", "Extra system instruction",
                 "--max-turns", "3",
                 "--max-budget-usd", "0.01",
                 "--effort", "high",
-                "--session-id", "claude-session-id",
+                "--session-id", "agent-session-id",
                 "--disallowedTools=WebFetch,WebSearch",
                 "--permission-mode", "bypassPermissions",
                 prompt,
@@ -255,7 +255,7 @@ class BackendSandboxTests(unittest.TestCase):
             "backend=sys.argv[3]; command_var='CODEX_BIN' if backend == 'codex' else 'OPENCODE_BIN'; "
             "extra=[Path(sys.argv[4])] if sys.argv[4] else []; "
             "a=bwrap_prefix(sys.argv[1], backend=backend, home=Path(sys.argv[2]), extra_writable=extra); "
-            "r=subprocess.run(a+['sh','-c',f'test ! -w \"${command_var}\" && command -v claude && claude --print probe'],capture_output=True,text=True); "
+            f"r=subprocess.run(a+['sh','-c',f'test ! -w \"${{command_var}}\" && command -v {AGENT_ENTRY} && {AGENT_ENTRY} --print probe'],capture_output=True,text=True); "
             "print(r.stdout, end=''); print(r.stderr, end='', file=sys.stderr); raise SystemExit(r.returncode)"
         )
         for backend in ("codex", "opencode"):
@@ -278,15 +278,17 @@ class BackendSandboxTests(unittest.TestCase):
                 )
                 with self.subTest(backend=backend, ancestor=ancestor_kind):
                     self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-                    self.assertIn("/claude", completed.stdout)
+                    self.assertIn(f"/{AGENT_ENTRY}", completed.stdout)
                     self.assertIn(f"mock-{backend}-{ancestor_kind}", completed.stdout)
 
     def test_fresh_interpreter_rebinds_both_real_agentic_callers(self) -> None:
         code = (
             "from gepa.oa import sandbox; from gepa.oa.engines import autoresearch, meta_harness; "
+            "assert sandbox.GEPA_SKILL_BACKEND_OVERLAY == 'GEPA_SKILL_BACKEND_OVERLAY_V3'; "
             "assert sandbox.bwrap_prefix.__module__ == 'gepa_skill_backend_sandbox_overlay'; "
             "assert autoresearch.bwrap_prefix is sandbox.bwrap_prefix; "
             "assert meta_harness.bwrap_prefix is sandbox.bwrap_prefix; "
+            "assert sandbox.preflight_claude_engine.__name__ == 'preflight_agent_engine'; "
             "print('caller aliases patched')"
         )
         completed = subprocess.run(
@@ -315,7 +317,6 @@ class BackendSandboxTests(unittest.TestCase):
             check=False,
             text=True,
         )
-        self.assertNotIn(".claude", completed.stdout)
         self.assertNotIn(".opencode", completed.stdout)
         self.assertIn("Codex sandbox state", completed.stdout)
 

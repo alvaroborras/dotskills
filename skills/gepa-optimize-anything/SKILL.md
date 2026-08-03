@@ -88,26 +88,22 @@ even see it). See `references/api.md` for details and when to use each mode.
 pip install "gepa[full]"   # [full] pulls cloudpickle — needed to pickle closure evaluators for
                            # parallel workers / opt-in evaluation caching; plain `pip install gepa`
                            # can fail there when your evaluator closes over data.
-# Proposer LLM: the gepa backend's reflection LM defaults to "openai/gpt-5.1" (a LiteLLM id) — set
-# that provider's key (OPENAI_API_KEY), or pass your own id (e.g. "anthropic/claude-sonnet-4-6" with
-# ANTHROPIC_API_KEY, or a Bedrock ARN with AWS creds). You can also pass any callable implementing
-# GEPA's LM protocol — a self-hosted / custom inference engine — instead of a model-id string.
-# Agentic backends use the bundled Codex/OpenCode compatibility shim. Put it first on PATH:
+# Proposer LLM: the gepa backend's reflection LM defaults to "openai/gpt-5.1" (a LiteLLM id) —
+# set OPENAI_API_KEY, or pass another LiteLLM id / Bedrock ARN / custom LM-protocol callable.
+# Agentic backends (autoresearch / meta_harness) use ONLY Codex or OpenCode via this skill's
+# shim. Put the skill bin first on PATH (required so GEPA's agent entry resolves):
 export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
-# Codex is the default backend; set GEPA_AGENT_BACKEND=opencode to use OpenCode instead.
-# Agentic engines never call native Claude: the skill shim re-execs Codex/OpenCode.
-# Default model is gpt-5.6-luna (override with GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL).
+# Codex is the default; set GEPA_AGENT_BACKEND=opencode for OpenCode.
+# Agent model default is gpt-5.6-luna (override with GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL).
 # Authenticate the selected CLI before long runs.
 # `jq` is needed by the generated eval.sh, and Linux sandboxing needs bubblewrap.
 # Pass sandbox=False only if you intentionally want to run the agent unconfined.
-# Before an agentic run, use `scripts/preflight.py --engine autoresearch`.
-# It prepares only selected-backend state: `~/.codex` for Codex or OpenCode's
-# exact config/data/cache directories. The shim has no native Claude mode.
-# After refreshing this skill's venv, run `scripts/reapply_backend_sandbox.py
-# --apply`, then rerun it without `--apply` to verify the skill-owned runtime
-# overlay. It does not rewrite GEPA or uv-cache package files.
-# Run `scripts/quick_validate.py` to rerun the structural checks and harmless
-# in-jail shim probe; it never starts an optimizer or makes a model call.
+# Before an agentic run: `scripts/preflight.py --engine autoresearch`
+#   prepares only selected-backend state (`~/.codex` or OpenCode config/data/cache).
+# After refreshing this skill's venv: `scripts/reapply_backend_sandbox.py --apply`
+#   then rerun without `--apply` to verify the skill-owned runtime overlay
+#   (does not rewrite GEPA or uv-cache package files).
+# Smoke-check without model calls: `scripts/quick_validate.py`
 ```
 
 ## Mental model (4 pieces)
@@ -205,7 +201,7 @@ result = optimize_anything(
         engine_config={              # gepa backend: a GEPAConfig-shaped dict, validated strictly —
             "reflection": {          #   an unknown key raises TypeError immediately (fail fast)
                 # a LiteLLM id (set the provider key) OR any callable implementing the LM protocol
-                "reflection_lm": "anthropic/claude-sonnet-4-6",
+                "reflection_lm": "openai/gpt-5.1",
                 "reflection_minibatch_size": 5,
             },
             "engine": {"max_workers": 32, "seed": 0},  # seed = reproducibility
@@ -250,10 +246,10 @@ These silently degrade *results* — skim before launching:
 - **`engine_config` is validated strictly per backend** — an unknown key (including a leftover key
   from a different backend after swapping `engine=`) raises `TypeError` at construction. Swapping
   `engine=` means swapping the `engine_config` block. → `references/api.md`.
-- **Agentic backends (`autoresearch`, `meta_harness`) shell out through the bundled Codex/OpenCode shim** and abort at
-  launch with install instructions if it's missing — likewise for `bwrap` (bubblewrap) on Linux,
-  which the default `sandbox=True` needs. `sandbox=False` runs the agent unconfined (loud warning).
-  Run `scripts/preflight.py` first; details in `references/api.md`.
+- **Agentic backends (`autoresearch`, `meta_harness`) shell out through the bundled Codex/OpenCode shim only**
+  and abort at launch if the selected CLI or shim is missing — likewise for `bwrap` (bubblewrap) on
+  Linux, which the default `sandbox=True` needs. `sandbox=False` runs the agent unconfined (loud
+  warning). Run `scripts/preflight.py --engine autoresearch` first; details in `references/api.md`.
 
 ## Reference files (load as needed)
 - `references/api.md` — `OptimizeAnythingConfig`, the backends and their typed `engine_config`

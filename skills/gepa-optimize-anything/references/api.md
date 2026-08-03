@@ -60,7 +60,7 @@ you want an unbiased number to report; skip it otherwise.
 | `output_dir` | `None` | where the eval server writes per-eval JSON, `progress_log.jsonl`, `summary.json`. `None` → `outputs/optimize_anything/<task>/<engine>/<timestamp>/`. |
 | `run_dir` | `None` | engine workspace (gepa run dir / agent work dir; with `engine.write_agent_state=True` the gepa backend writes an agent-readable `iterations/` + `pareto/` tree here). Distinct from `output_dir`. `None` → subprocess engines use a tempdir; set it to persist artifacts. |
 | `stop_at_score` | `None` | early-stop score threshold; each engine interprets it. |
-| `sandbox` | **`True`** | OS-jail the subprocess engines' agent sessions: bwrap on Linux (needs the `bubblewrap` package — the run aborts at launch if `bwrap` is missing). The bundled shim supports only Codex (default) and OpenCode (`GEPA_AGENT_BACKEND=opencode`), not native Claude. Mounts are backend-aware and narrow: the exact selected CLI, shim/runtime, and selected backend state only (`~/.codex` for Codex; OpenCode config/data/cache plus its executable tree). It never mounts broad `~/.local`, `~/.cache`, or the other backend's state. Also forces the work dir to a tempdir even when `run_dir` is set (artifacts are mirrored back). `False` prints a loud warning and runs the agent unsandboxed. |
+| `sandbox` | **`True`** | OS-jail the subprocess engines' agent sessions: bwrap on Linux (needs the `bubblewrap` package — the run aborts at launch if `bwrap` is missing). Agentic engines always run through this skill's Codex/OpenCode shim (`GEPA_AGENT_BACKEND=codex` default, or `opencode`). Mounts are backend-aware and narrow: the exact selected CLI, shim/runtime, and selected backend state only (`~/.codex` for Codex; OpenCode config/data/cache plus its executable tree). It never mounts broad `~/.local`, `~/.cache`, or the other backend's state. Also forces the work dir to a tempdir even when `run_dir` is set (artifacts are mirrored back). `False` prints a loud warning and runs the agent unsandboxed. |
 | `engine_config` | `{}` | dict of **engine-specific** options — see the per-backend sections below. Parsed into a typed per-engine config dataclass; **an unknown key raises `TypeError` immediately** (fail fast, not warn-and-drop). |
 
 **If both `max_evals` and `max_token_cost` are `None`, the run is unbounded** (only a
@@ -79,7 +79,7 @@ changing one argument. Each backend parses `engine_config` into its own typed da
 | `gepa` | an LLM reflects on evaluator feedback and mutates the candidate; keeps a Pareto frontier | in-process | reflection-LM creds (default `openai/gpt-5.1`) or a custom LM |
 | `autoresearch` | one Codex/OpenCode subprocess iterates in a work dir (`program.md`, `candidate.txt`, `eval.sh` → HTTP eval server) | subprocess | bundled shim on PATH + authenticated Codex/OpenCode, `jq` |
 | `meta_harness` | a Codex/OpenCode subprocess reads frontier/history and writes `pending_eval.json` candidates; the engine benchmarks each | subprocess | bundled shim on PATH + authenticated Codex/OpenCode |
-| `best_of_n` *(baseline)* | independent single-shot samples from one LLM; keep the best — no feedback, no history | in-process | LiteLLM creds for `model` (default `claude-sonnet-4-6`) |
+| `best_of_n` *(baseline)* | independent single-shot samples from one LLM; keep the best — no feedback, no history | in-process | LiteLLM creds for `model` (set explicitly, e.g. `openai/gpt-5.1`) |
 
 `scripts/preflight.py` checks a backend's prerequisites before a long run.
 
@@ -93,12 +93,11 @@ the `max_token_cost` → `engine.max_reflection_cost` cap.
 ```python
 engine_config={
     "reflection": {                     # -> ReflectionConfig
-        "reflection_lm": "anthropic/claude-sonnet-4-6",  # default "openai/gpt-5.1"; see "Proposer LM"
+        "reflection_lm": "openai/gpt-5.1",  # default; see "Proposer LM"
         "reflection_lm_kwargs": {"reasoning_effort": "high"},  # litellm kwargs (temperature, thinking, …)
         "reflection_minibatch_size": 5,  # default: 1 single-task, 3 otherwise
-        # "custom_candidate_proposer": ClaudeCodeAgentProposer(...),  # replace the reflection LM with
-        #                                # a Claude Code proposer (from gepa.oa.proposers)
-        # "reflection_strategy": ...,    # advanced: a ReflectionLM impl owning how reflection is called
+        # "custom_candidate_proposer": ...,  # optional custom proposer (from gepa.oa.proposers)
+        # "reflection_strategy": ...,       # advanced: a ReflectionLM impl owning how reflection is called
     },
     "engine": {                          # -> EngineConfig (all optional, sensible defaults)
         "max_workers": 32,               # parallel eval workers (default: cpu_count or 32)
@@ -123,30 +122,36 @@ The nested dataclasses live in `gepa.gepa_launcher` (`EngineConfig`, `Reflection
 e.g. **candidate-selection**, **acceptance-criterion**, **batch-sampling**, **callbacks**,
 **cost-tracking**, **experiment-tracking** — see <https://gepa-ai.github.io/gepa/guides/>.
 
+### Agentic backends (Codex / OpenCode only)
+`autoresearch` and `meta_harness` shell out through this skill's agent shim, which always re-execs
+**Codex** (`GEPA_AGENT_BACKEND=codex`, default) or **OpenCode** (`GEPA_AGENT_BACKEND=opencode`).
+Put the skill `bin/` first on PATH, authenticate the selected CLI, and set the agent model with
+`GEPA_CODEX_MODEL` / `GEPA_OPENCODE_MODEL` (default `gpt-5.6-luna`). Upstream package defaults for
+`engine_config["model"]` are ignored by the shim when those env vars are set (the overlay sets them).
+
 ### `autoresearch` — `engine_config` → `AutoResearchConfig`
 | key | default | meaning |
 |---|---|---|
-| `model` | `"claude-sonnet-4-6"` | Claude model id (pass `"sonnet"`/`"opus"` to track the current default). |
-| `ralph` | `True` | keep resuming one Claude session (`claude --resume`) while budget remains. |
+| `model` | *(ignored by shim when `GEPA_*_MODEL` set)* | upstream field; skill uses Codex/OpenCode model env instead. |
+| `ralph` | forced `False` by this skill | upstream multi-turn resume is not bridged to Codex/OpenCode. |
 | `max_no_eval_seconds` | `None` | kill the subprocess after this long with no eval call. |
 | `handoffs` | `None` | prior-stage artifacts for sequential compositions (materialized under `handoff/`). |
-| `effort` | `None` | `claude --effort` value. |
-| `max_thinking_tokens` | `None` | fixed thinking-token budget (`MAX_THINKING_TOKENS`). |
+| `effort` | `None` | consumed by the shim; not forwarded to Codex/OpenCode. |
+| `max_thinking_tokens` | `None` | fixed thinking-token budget env for the agent process when set. |
 
 The engine lays out a work dir (`program.md`, `candidate.txt`, `best_candidate.txt`, `eval.sh`) and
-launches `claude --print`; `eval.sh` POSTs candidates to the eval server, which enforces the budget
-server-side (HTTP 429 on exhaustion) and caps LLM spend via `--max-budget-usd` (from
-`max_token_cost`). Train and val are presented to the agent as one combined pool; the test set is
-unreachable over HTTP.
+launches the skill shim (`--print` JSON contract → Codex/OpenCode). `eval.sh` POSTs candidates to
+the eval server, which enforces the budget server-side (HTTP 429 on exhaustion) and caps agent spend
+via `max_token_cost`. Train and val are one combined pool; the test set is unreachable over HTTP.
 
 ### `meta_harness` — `engine_config` → `MetaHarnessConfig`
 | key | default | meaning |
 |---|---|---|
-| `model` | `"claude-sonnet-4-6"` | proposer model id. |
+| `model` | *(ignored by shim when `GEPA_*_MODEL` set)* | upstream field; skill uses Codex/OpenCode model env instead. |
 | `max_iterations` | `None` | hard cap on proposer sessions; `None` = until budget. |
 | `max_candidates_per_iter` | `3` | upper bound on candidates proposed per iteration. |
-| `effort` | `None` | `claude --effort` value. |
-| `max_thinking_tokens` | `None` | fixed thinking-token budget. |
+| `effort` | `None` | consumed by the shim; not forwarded to Codex/OpenCode. |
+| `max_thinking_tokens` | `None` | fixed thinking-token budget when set. |
 
 Each iteration the proposer subprocess reads the frontier + history state files, writes
 `pending_eval.json` with 1+ candidates, and the engine benchmarks each through the eval server.
@@ -158,7 +163,7 @@ optimizer, not as the optimizer. Stops on budget exhaustion, `stop_at_score`, or
 
 | key | default | meaning |
 |---|---|---|
-| `model` | `"claude-sonnet-4-6"` | LiteLLM model id used to sample candidates. |
+| `model` | set explicitly (e.g. `"openai/gpt-5.1"`) | LiteLLM model id used to sample candidates. |
 | `temperature` | `1.0` | sampling on by default so N calls don't collapse to one response. |
 | `max_n` | `None` | optional hard cap on samples; `None` = run until budget out. |
 | `lm_kwargs` | `{}` | extra kwargs forwarded to `gepa.lm.LM`. |
@@ -167,9 +172,9 @@ optimizer, not as the optimizer. Stops on budget exhaustion, `stop_at_score`, or
 
 ## Proposer LM (not limited to LiteLLM)
 `reflection.reflection_lm` (gepa) accepts either:
-- a **model-id string** resolved through LiteLLM (`"openai/gpt-5.1"` — the default —
-  `"anthropic/claude-sonnet-4-6"`, a Bedrock inference-profile ARN, …); set the provider's
-  credentials, and pass litellm kwargs via `reflection.reflection_lm_kwargs`; or
+- a **model-id string** resolved through LiteLLM (`"openai/gpt-5.1"` — the default — or another
+  provider id / Bedrock inference-profile ARN); set the provider's credentials, and pass litellm
+  kwargs via `reflection.reflection_lm_kwargs`; or
 - **any object/callable implementing GEPA's LM protocol** — `__call__(prompt) -> str` (a
   `str`-or-messages prompt in, completion text out). This is how you plug a **self-hosted or custom
   inference engine** (vLLM, a local server, your own client) instead of LiteLLM.

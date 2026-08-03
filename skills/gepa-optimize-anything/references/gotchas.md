@@ -39,19 +39,18 @@ Every backend parses `engine_config` into a typed dataclass (`GEPAConfig` for ge
 `BestOfNConfig` / `AutoResearchConfig` / `MetaHarnessConfig` for the others), so a typo'd or
 wrong-backend key fails **immediately at construction** with a `TypeError` — it is *not* silently
 dropped. The practical consequence: swapping `engine=` requires swapping the whole `engine_config`
-block, and old-API keys (`claude_code_agent`, top-level `reflection_lm_kwargs`, `objective`,
+block, and old-API keys (legacy agent flags, top-level `reflection_lm_kwargs`, `objective`,
 `background` inside `engine_config`) now crash. See `api.md` for each backend's valid keys.
 
 ## 6. Agentic backends have launch-time prerequisites
-`autoresearch` / `meta_harness` launch `claude --print`, which this skill supplies as a
-Codex/OpenCode compatibility shim (there is no native Claude mode). A missing selected CLI — or, on
-Linux, a missing `bwrap` (bubblewrap) while the default `sandbox=True` is in effect — aborts the run
-at launch. An *unauthenticated* CLI or a missing `jq` (used by autoresearch's generated `eval.sh`)
-still surfaces only mid-run, and `sandbox=False` runs the agent unconfined (loud warning) — so run
+`autoresearch` / `meta_harness` always run through this skill's Codex/OpenCode shim (default
+`GEPA_AGENT_BACKEND=codex`, or `opencode`). A missing selected CLI — or, on Linux, a missing
+`bwrap` (bubblewrap) while the default `sandbox=True` is in effect — aborts the run at launch. An
+*unauthenticated* CLI or a missing `jq` (used by autoresearch's generated `eval.sh`) still surfaces
+only mid-run, and `sandbox=False` runs the agent unconfined (loud warning) — so run
 `scripts/preflight.py --engine autoresearch` first either way. That check prepares and reports only
-the selected backend's narrow state paths. The shim independently accepts only
-`GEPA_AGENT_BACKEND=codex` or `opencode`; `claude` and unknown values fail before
-any backend CLI can be invoked, including with `sandbox=False`.
+the selected backend's narrow state paths. Any other `GEPA_AGENT_BACKEND` value fails closed before
+a backend CLI is invoked, including with `sandbox=False`.
 
 ## 7. Give runs a real stop condition (`stop_at_score` / `max_token_cost`)
 `max_evals` caps eval calls, but two situations still burn money or time past the point of useful
@@ -111,5 +110,6 @@ your evaluator stops the whole optimization. Either catch failures yourself and 
 - [ ] `engine_config` keys match the chosen backend (typos raise `TypeError`, #5)
 - [ ] `run_dir` + `output_dir` set (so artifacts persist)
 - [ ] `test_set` passed if you need an unbiased number to report
-- [ ] for agentic backends: `claude` CLI on PATH + authed, `jq` installed, and on Linux `bwrap`
-      (bubblewrap) for the default `sandbox=True` (`scripts/preflight.py`)
+- [ ] for agentic backends: skill `bin/` on PATH, Codex or OpenCode installed + authed, `jq`
+      installed, and on Linux `bwrap` (bubblewrap) for the default `sandbox=True`
+      (`scripts/preflight.py --engine autoresearch`)

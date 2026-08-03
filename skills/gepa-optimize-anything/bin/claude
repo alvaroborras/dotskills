@@ -1,5 +1,10 @@
 #!/home/alvaro/.agents/skills/gepa-optimize-anything/.venv/bin/python
-"""Codex/OpenCode compatibility shim for GEPA's Claude CLI contract."""
+"""Codex/OpenCode agent entrypoint for GEPA agentic engines.
+
+GEPA engines exec this basename on PATH with a ``--print`` JSON contract.
+This skill never runs a third-party agent CLI under that name: the process
+always re-execs Codex (default) or OpenCode.
+"""
 from __future__ import annotations
 
 import json
@@ -10,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+
+# Basename GEPA engines look up on PATH / rewrite to an absolute path.
+GEPA_AGENT_ENTRY = Path(__file__).name
 
 VALUE_FLAGS = frozenset({
     "--allowedTools",
@@ -38,25 +46,34 @@ BOOLEAN_FLAGS = frozenset({
     "--verbose",
 })
 
+# Upstream GEPA may pass these as --model; they are not valid Codex/OpenCode ids.
+_UPSTREAM_DEFAULT_MODEL_NICKNAMES = frozenset({
+    "sonnet",
+    "opus",
+    "haiku",
+    "claude-sonnet-4-6",
+    "claude-opus-4",
+    "claude-haiku-4",
+})
 
-class ClaudeArgumentError(ValueError):
-    """An unsupported Claude Code argument was supplied to the shim."""
+
+class AgentArgumentError(ValueError):
+    """An unsupported agent CLI argument was supplied to the shim."""
 
 
-def parse_claude_request(argv: list[str]) -> tuple[str, str | None, str | None]:
+def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None]:
     """Extract the printable prompt and optional system instructions.
 
-    GEPA invokes Claude as ``claude --print --output-format json ... PROMPT``.
-    In particular, ``--print`` is a boolean: treating its following token as
-    a prompt sends ``--output-format`` to Codex as a positional argument.
-    Claude-only controls are deliberately consumed here; the shim itself
-    emits GEPA's single JSON result envelope, so ``--output-format`` must not
-    be translated to Codex's unrelated ``--output-schema`` option.
+    GEPA invokes the agent entry as ``<entry> --print --output-format json ... PROMPT``.
+    ``--print`` is a boolean: treating its following token as a prompt would send
+    ``--output-format`` to Codex as a positional argument. Upstream-only controls
+    are consumed here; the shim emits GEPA's JSON result envelope itself, so
+    ``--output-format`` must not be translated to Codex's unrelated ``--output-schema``.
     """
     printed = False
     prompt_parts: list[str] = []
     system_parts: list[str] = []
-    claude_model: str | None = None
+    requested_model: str | None = None
     index = 0
     while index < len(argv):
         argument = argv[index]
@@ -74,7 +91,7 @@ def parse_claude_request(argv: list[str]) -> tuple[str, str | None, str | None]:
             else:
                 index += 1
                 if index >= len(argv):
-                    raise ClaudeArgumentError(f"Claude option {flag} requires a value")
+                    raise AgentArgumentError(f"option {flag} requires a value")
                 value = argv[index]
             if flag == "--system-prompt":
                 system_parts = [value]
@@ -84,24 +101,23 @@ def parse_claude_request(argv: list[str]) -> tuple[str, str | None, str | None]:
                 try:
                     system_parts = [Path(value).read_text(encoding="utf-8")]
                 except OSError as exc:
-                    raise ClaudeArgumentError(f"cannot read {flag} file {value!r}: {exc}") from exc
+                    raise AgentArgumentError(f"cannot read {flag} file {value!r}: {exc}") from exc
             elif flag == "--model":
-                claude_model = value
-            # Model, max-turn, session, permissions, budget, and output-format
-            # are provider-specific Claude controls. Codex/OpenCode do not
-            # share their semantics, so consume them rather than forwarding
-            # invalid flags. Adapter-specific model env vars are handled below.
+                requested_model = value
+            # Model, max-turn, session, permissions, budget, and output-format are
+            # upstream CLI controls. Codex/OpenCode do not share their semantics,
+            # so consume them rather than forwarding invalid flags.
             index += 1
             continue
         if argument.startswith("-"):
-            raise ClaudeArgumentError(f"unsupported Claude option: {argument}")
+            raise AgentArgumentError(f"unsupported option: {argument}")
         prompt_parts.append(argument)
         index += 1
     if not printed:
-        raise ClaudeArgumentError("only supports Claude's --print mode")
+        raise AgentArgumentError("only supports --print mode")
     if not prompt_parts:
-        raise ClaudeArgumentError("Claude --print requires a prompt")
-    return " ".join(prompt_parts), "\n\n".join(part for part in system_parts if part), claude_model
+        raise AgentArgumentError("--print requires a prompt")
+    return " ".join(prompt_parts), "\n\n".join(part for part in system_parts if part), requested_model
 
 
 def text(value_: Any) -> str:
@@ -118,12 +134,32 @@ def text(value_: Any) -> str:
     return ""
 
 
+def _resolve_model(preferred: str | None, fallback: str | None) -> str | None:
+    """Prefer backend-specific env, then caller model, then skill default.
+
+    Upstream GEPA default model nicknames / Anthropic-style ids are ignored so
+    Codex/OpenCode never receive an invalid model id.
+    """
+    for candidate in (preferred, fallback, os.environ.get("GEPA_DEFAULT_MODEL"), "gpt-5.6-luna"):
+        if not candidate:
+            continue
+        lowered = candidate.strip().lower()
+        if (
+            lowered in _UPSTREAM_DEFAULT_MODEL_NICKNAMES
+            or lowered.startswith("claude")
+            or lowered.startswith("anthropic/")
+        ):
+            continue
+        return candidate
+    return "gpt-5.6-luna"
+
+
 if "--print" not in sys.argv[1:]:
-    print("gepa agent shim only supports Claude's --print mode", file=sys.stderr)
+    print("gepa agent shim only supports --print mode", file=sys.stderr)
     raise SystemExit(2)
 try:
-    prompt, system_prompt, claude_model = parse_claude_request(sys.argv[1:])
-except ClaudeArgumentError as exc:
+    prompt, system_prompt, requested_model = parse_agent_request(sys.argv[1:])
+except AgentArgumentError as exc:
     print(f"gepa agent shim {exc}", file=sys.stderr)
     raise SystemExit(2)
 if system_prompt:
@@ -135,29 +171,6 @@ if backend not in {"codex", "opencode"}:
         file=sys.stderr,
     )
     raise SystemExit(2)
-def _resolve_model(preferred: str | None, fallback: str | None) -> str | None:
-    """Prefer backend-specific env, then caller model, then skill default.
-
-    Claude-only nicknames (sonnet/opus/haiku and anthropic ids) are ignored so
-    Codex/OpenCode never receive an invalid model id from GEPA defaults.
-    """
-    claude_like = {
-        "sonnet",
-        "opus",
-        "haiku",
-        "claude-sonnet-4-6",
-        "claude-opus-4",
-        "claude-haiku-4",
-    }
-    for candidate in (preferred, fallback, os.environ.get("GEPA_DEFAULT_MODEL"), "gpt-5.6-luna"):
-        if not candidate:
-            continue
-        lowered = candidate.strip().lower()
-        if lowered in claude_like or lowered.startswith("claude") or lowered.startswith("anthropic/"):
-            continue
-        return candidate
-    return "gpt-5.6-luna"
-
 
 if backend == "codex":
     executable = os.environ.get("CODEX_BIN") or shutil.which("codex")
@@ -165,12 +178,12 @@ if backend == "codex":
         print("gepa Codex shim: `codex` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
     command = [executable, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", os.getcwd()]
-    model = _resolve_model(os.environ.get("GEPA_CODEX_MODEL"), claude_model)
+    model = _resolve_model(os.environ.get("GEPA_CODEX_MODEL"), requested_model)
     if model:
         command += ["--model", model]
     # Use stdin rather than a positional prompt so any prompt beginning with
-    # dashes is unambiguously data. This is also where system-prompt content
-    # is carried, since Codex has no Claude-equivalent system-prompt flag.
+    # dashes is unambiguously data. System-prompt content is folded into stdin
+    # because Codex has no separate system-prompt flag matching the upstream CLI.
     command.append("-")
 else:  # backend == "opencode" (validated above)
     executable = os.environ.get("OPENCODE_BIN") or shutil.which("opencode")
@@ -178,7 +191,7 @@ else:  # backend == "opencode" (validated above)
         print("gepa OpenCode shim: `opencode` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
     command = [executable, "run", "--format", "json", "--auto", "--dir", os.getcwd()]
-    model = _resolve_model(os.environ.get("GEPA_OPENCODE_MODEL"), claude_model)
+    model = _resolve_model(os.environ.get("GEPA_OPENCODE_MODEL"), requested_model)
     if model:
         command += ["--model", model]
     command.append(prompt)

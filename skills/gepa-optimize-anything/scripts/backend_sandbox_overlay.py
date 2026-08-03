@@ -3,6 +3,10 @@
 Loaded from a .pth file in the skill virtualenv.  It deliberately replaces
 runtime functions instead of editing ``gepa/oa/sandbox.py`` (which uv may
 hardlink into its cache).
+
+GEPA agentic engines hardcode an on-PATH agent entry basename and a
+``--print`` JSON contract.  This skill supplies that entry as a shim that
+always re-execs Codex (default) or OpenCode — never a third-party agent CLI.
 """
 
 from __future__ import annotations
@@ -10,11 +14,16 @@ from __future__ import annotations
 import importlib
 import os
 import shutil
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
-OVERLAY_VERSION = "GEPA_SKILL_BACKEND_OVERLAY_V2"
+OVERLAY_VERSION = "GEPA_SKILL_BACKEND_OVERLAY_V3"
+DEFAULT_AGENT_MODEL = "gpt-5.6-luna"
+# Basename GEPA engines look up on PATH (upstream hardcode). Skill ships the
+# shim under this name solely so ``shutil.which`` / argv[0] resolution succeeds.
+_ENTRY_BASENAME = "claude"
 
 
 def _skill_root() -> Path:
@@ -23,7 +32,7 @@ def _skill_root() -> Path:
     # Source file lives in ``scripts/``; installed overlay lives in the venv.
     candidates.extend(Path(__file__).resolve().parents[index] for index in (1, 4))
     for candidate in candidates:
-        if (candidate / "bin" / "claude").is_file():
+        if (candidate / "bin" / _ENTRY_BASENAME).is_file():
             return candidate
     raise RuntimeError("cannot locate GEPA skill root; set GEPA_SKILL_ROOT")
 
@@ -54,8 +63,12 @@ def _resolve_binary(backend: str) -> Path:
     return path
 
 
+def _shim_path() -> Path:
+    return (SKILL_ROOT / "bin" / _ENTRY_BASENAME).resolve()
+
+
 def _shim_interpreter() -> tuple[Path, Path, Path, Path]:
-    shim = (SKILL_ROOT / "bin" / "claude").resolve()
+    shim = _shim_path()
     first = shim.read_text(encoding="utf-8").splitlines()[0]
     if not first.startswith("#!"):
         raise RuntimeError(f"shim has no shebang: {shim}")
@@ -71,7 +84,6 @@ def _shim_interpreter() -> tuple[Path, Path, Path, Path]:
         target = os.readlink(interpreter)
         link_target = Path(target) if os.path.isabs(target) else interpreter.parent / target
     resolved = interpreter.resolve()
-    # Python may be symlinked outside the venv; mount its resolved runtime root.
     runtime_root = resolved.parent.parent
     if not runtime_root.is_dir():
         raise RuntimeError(f"shim runtime root is unavailable: {runtime_root}")
@@ -141,7 +153,10 @@ def bwrap_prefix(work_dir: str | Path, *, extra_writable=None, backend=None, hom
     if not venv.is_dir():
         raise RuntimeError(f"skill virtualenv is unavailable: {venv}")
     command_var = "CODEX_BIN" if backend == "codex" else "OPENCODE_BIN"
-    narrow_sources = [shim.parent, executable, interpreter_target, runtime_alias_root, venv, runtime_root, *state["read_only"], *state["writable"], work]
+    narrow_sources = [
+        shim.parent, executable, interpreter_target, runtime_alias_root,
+        venv, runtime_root, *state["read_only"], *state["writable"], work,
+    ]
     args = [
         "bwrap", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
         *sandbox._system_bind_args(), *sandbox._etc_bind_args(),
@@ -169,45 +184,167 @@ def bwrap_prefix(work_dir: str | Path, *, extra_writable=None, backend=None, hom
 
 
 def agent_cli_name() -> str:
-    """Return the on-PATH name engines should exec.
-
-    GEPA upstream hardcodes ``claude``.  This skill never runs native Claude:
-    engines must invoke the skill shim (still named ``claude`` only as a PATH
-    compatibility entry) which immediately re-execs Codex or OpenCode based on
-    ``GEPA_AGENT_BACKEND``.  Prefer the absolute shim path so a random
-    system ``claude`` cannot win the PATH race.
-    """
-    return str((SKILL_ROOT / "bin" / "claude").resolve())
+    """Absolute path of the skill shim engines should exec."""
+    return str(_shim_path())
 
 
 def _agent_env(env: dict | None = None) -> dict[str, str]:
     out = dict(env or os.environ)
-    out.setdefault("GEPA_AGENT_BACKEND", selected_backend())
-    out.setdefault("GEPA_DEFAULT_MODEL", "gpt-5.6-luna")
-    if selected_backend() == "codex":
-        out.setdefault("GEPA_CODEX_MODEL", out.get("GEPA_DEFAULT_MODEL", "gpt-5.6-luna"))
+    backend = selected_backend()
+    out["GEPA_AGENT_BACKEND"] = backend
+    out.setdefault("GEPA_DEFAULT_MODEL", DEFAULT_AGENT_MODEL)
+    if backend == "codex":
+        out.setdefault("GEPA_CODEX_MODEL", out.get("GEPA_DEFAULT_MODEL", DEFAULT_AGENT_MODEL))
     else:
-        out.setdefault("GEPA_OPENCODE_MODEL", out.get("GEPA_DEFAULT_MODEL", "gpt-5.6-luna"))
+        out.setdefault("GEPA_OPENCODE_MODEL", out.get("GEPA_DEFAULT_MODEL", DEFAULT_AGENT_MODEL))
+    # Prefer the skill shim over any other same-basename binary on PATH.
+    out["PATH"] = f"{_shim_path().parent}:{out.get('PATH', '')}"
     return out
+
+
+def _is_shim_path(token: object) -> bool:
+    text = str(token)
+    if not text:
+        return False
+    try:
+        return Path(text).resolve() == _shim_path()
+    except OSError:
+        return False
+
+
+def _is_upstream_entry_token(token: object) -> bool:
+    """True for the bare upstream basename or a non-skill binary of that name."""
+    text = str(token)
+    if text == _ENTRY_BASENAME:
+        return True
+    if text.endswith(f"/{_ENTRY_BASENAME}") and not _is_shim_path(text):
+        return True
+    return False
 
 
 def _rewrite_agent_cmd(cmd: list[str], shim: str) -> list[str]:
     rewritten = list(cmd)
     for index, token in enumerate(rewritten):
-        if token == "claude" or str(token).endswith("/claude"):
+        if _is_upstream_entry_token(token):
             rewritten[index] = shim
             break
     return rewritten
+
+
+def _boxed(title: str, lines: list[str]) -> str:
+    width = max(len(title), *(len(line) for line in lines), 40)
+    bar = "=" * (width + 4)
+    body = "\n".join(f"| {line:<{width}} |" for line in [title, "", *lines])
+    return f"{bar}\n{body}\n{bar}"
+
+
+def require_agent_cli(engine_name: str) -> None:
+    """Abort when the skill shim or selected Codex/OpenCode CLI is missing."""
+    shim = _shim_path()
+    if not shim.is_file():
+        print(
+            _boxed(
+                "GEPA AGENT SHIM NOT FOUND",
+                [
+                    f"The {engine_name!r} engine needs this skill's agent shim at:",
+                    f"  {shim}",
+                    "Restore the skill's bin/ entry and put it first on PATH.",
+                ],
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise RuntimeError(f"the {engine_name!r} engine requires the skill agent shim at {shim}")
+    backend = selected_backend()
+    try:
+        _resolve_binary(backend)
+    except RuntimeError as exc:
+        print(
+            _boxed(
+                f"{backend.upper()} CLI NOT FOUND",
+                [
+                    f"The {engine_name!r} engine runs through {backend.title()} via the skill shim,",
+                    f"but {backend!r} is not available.",
+                    "",
+                    str(exc),
+                    "",
+                    "Install and authenticate the CLI, or set CODEX_BIN / OPENCODE_BIN.",
+                    "Select backend with GEPA_AGENT_BACKEND=codex|opencode (default: codex).",
+                ],
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise RuntimeError(
+            f"the {engine_name!r} engine requires the {backend} CLI (GEPA_AGENT_BACKEND={backend})"
+        ) from exc
+
+
+def require_bwrap(engine_name: str) -> None:
+    sandbox = importlib.import_module("gepa.oa.sandbox")
+    if sandbox._IS_MACOS or shutil.which("bwrap"):
+        return
+    print(
+        _boxed(
+            "SANDBOX UNAVAILABLE: bwrap NOT FOUND",
+            [
+                "sandbox=True jails the Codex/OpenCode agent subprocess with bubblewrap on",
+                "Linux, but no `bwrap` executable is on PATH.",
+                "",
+                "Install it:",
+                "  sudo apt install bubblewrap   (Debian/Ubuntu)",
+                "  sudo dnf install bubblewrap   (Fedora/RHEL)",
+                "",
+                "Or pass OptimizeAnythingConfig(sandbox=False) to run unsandboxed.",
+            ],
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+    raise RuntimeError(
+        f"sandbox=True on the {engine_name!r} engine but `bwrap` (bubblewrap) was not found on PATH; "
+        "install bubblewrap or set sandbox=False"
+    )
+
+
+def warn_sandbox_disabled(engine_name: str) -> None:
+    print(
+        _boxed(
+            "SANDBOX DISABLED",
+            [
+                f"sandbox=False: the {engine_name!r} engine's Codex/OpenCode agent",
+                "runs with no OS-level confinement — unrestricted access as this user.",
+                "",
+                "Set sandbox=True (the default) to confine it to a throwaway",
+                "work dir (bwrap on Linux).",
+            ],
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def preflight_agent_engine(engine_name: str, *, sandbox: bool) -> None:
+    require_agent_cli(engine_name)
+    if sandbox:
+        require_bwrap(engine_name)
+    else:
+        warn_sandbox_disabled(engine_name)
 
 
 def _patch_engine_agent_binary(caller: ModuleType) -> None:
     """Force agentic engines to exec the skill shim (Codex/OpenCode backend)."""
     shim = agent_cli_name()
 
+    # Upstream symbol name is fixed by the GEPA package.
     starter = getattr(caller, "_start_claude_process", None)
     if starter is not None and not getattr(starter, "_gepa_skill_agent_patched", False):
         def _start(cmd, work_dir, env, __starter=starter, __shim=shim):  # type: ignore[no-untyped-def]
-            return __starter(_rewrite_agent_cmd(cmd, __shim), work_dir, _agent_env(env))
+            rewritten = list(cmd)
+            if any(_is_upstream_entry_token(token) for token in rewritten):
+                rewritten = _rewrite_agent_cmd(rewritten, __shim)
+                env = _agent_env(env)
+            return __starter(rewritten, work_dir, env)
 
         _start._gepa_skill_agent_patched = True  # type: ignore[attr-defined]
         caller._start_claude_process = _start  # type: ignore[attr-defined]
@@ -218,16 +355,35 @@ def _patch_engine_agent_binary(caller: ModuleType) -> None:
         original_run = subproc.run
 
         def _run(cmd, *args, __original=original_run, __shim=shim, **kwargs):  # type: ignore[no-untyped-def]
-            if isinstance(cmd, (list, tuple)) and any(
-                token == "claude" or str(token).endswith("/claude") for token in cmd
-            ):
+            # Only rewrite upstream bare-name / foreign-binary launches. Direct
+            # invocations of this skill's shim (tests, nested probes) keep their
+            # caller env untouched — important because this patches the shared
+            # stdlib subprocess module via the engine's `import subprocess`.
+            if isinstance(cmd, (list, tuple)) and any(_is_upstream_entry_token(token) for token in cmd):
                 cmd = _rewrite_agent_cmd(list(cmd), __shim)
-                env = kwargs.get("env")
-                kwargs["env"] = _agent_env(env)
+                kwargs["env"] = _agent_env(kwargs.get("env"))
             return __original(cmd, *args, **kwargs)
 
         _run._gepa_skill_agent_patched = True  # type: ignore[attr-defined]
         subproc.run = _run  # type: ignore[assignment]
+
+
+def _patch_autoresearch_defaults(caller: ModuleType) -> None:
+    """Disable session-resume loops; Codex/OpenCode shim has no --resume bridge."""
+    engine_cls = getattr(caller, "AutoResearchEngine", None)
+    if engine_cls is None or getattr(engine_cls, "_gepa_skill_init_patched", False):
+        return
+    original_init = engine_cls.__init__
+
+    def _init(self, config, __original=original_init):  # type: ignore[no-untyped-def]
+        __original(self, config)
+        # Upstream default ralph=True uses --resume; the shim consumes that flag
+        # without forwarding it, so multi-turn resume would silently no-op.
+        self.ralph = False
+
+    _init._gepa_skill_agent_patched = True  # type: ignore[attr-defined]
+    engine_cls.__init__ = _init  # type: ignore[method-assign]
+    engine_cls._gepa_skill_init_patched = True  # type: ignore[attr-defined]
 
 
 def install(module: ModuleType | None = None) -> None:
@@ -237,18 +393,31 @@ def install(module: ModuleType | None = None) -> None:
     missing = [name for name in required if not hasattr(module, name)]
     if missing:
         raise RuntimeError(f"incompatible GEPA sandbox API; missing {', '.join(missing)}")
+
     module.bwrap_prefix = bwrap_prefix
     module.prepare_backend_state = prepare_backend_state
     module._agent_backend = selected_backend
+    module.require_claude_cli = require_agent_cli
+    module.require_bwrap = require_bwrap
+    module.warn_sandbox_disabled = warn_sandbox_disabled
+    module.preflight_claude_engine = preflight_agent_engine
     module.GEPA_SKILL_BACKEND_OVERLAY = OVERLAY_VERSION
+
     callers: list[str] = []
     for module_name in AGENTIC_CALLERS:
         caller = importlib.import_module(module_name)
         if not hasattr(caller, "bwrap_prefix"):
             raise RuntimeError(f"incompatible GEPA caller API; {module_name} has no bwrap_prefix")
         caller.bwrap_prefix = bwrap_prefix
+        if hasattr(caller, "preflight_claude_engine"):
+            caller.preflight_claude_engine = preflight_agent_engine
+        if hasattr(caller, "require_claude_cli"):
+            caller.require_claude_cli = require_agent_cli
         _patch_engine_agent_binary(caller)
+        if module_name.endswith("autoresearch"):
+            _patch_autoresearch_defaults(caller)
         callers.append(module_name)
+
     stale = [
         module_name
         for module_name in callers
