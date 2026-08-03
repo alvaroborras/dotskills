@@ -94,7 +94,12 @@ pip install "gepa[full]"   # [full] pulls cloudpickle — needed to pickle closu
 # shim. Put the skill bin first on PATH (required so GEPA's agent entry resolves):
 export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
 # Codex is the default; set GEPA_AGENT_BACKEND=opencode for OpenCode.
-# Agent model default is gpt-5.6-luna (override with GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL).
+# Agent models are the GPT-5.6 family only:
+#   gpt-5.6-luna (default) | gpt-5.6-terra | gpt-5.6-sol
+#   (bare names luna/terra/sol also accepted)
+# Reasoning / thinking level (default high): low | medium | high | xhigh | max
+#   terra/sol also accept ultra. Set via GEPA_REASONING_EFFORT or engine_config effort.
+# Override model: GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL (OpenCode gets openai/<slug>).
 # Authenticate the selected CLI before long runs.
 # `jq` is needed by the generated eval.sh, and Linux sandboxing needs bubblewrap.
 # Pass sandbox=False only if you intentionally want to run the agent unconfined.

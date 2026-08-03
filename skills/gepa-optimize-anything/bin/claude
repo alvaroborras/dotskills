@@ -4,6 +4,9 @@
 GEPA engines exec this basename on PATH with a ``--print`` JSON contract.
 This skill never runs a third-party agent CLI under that name: the process
 always re-execs Codex (default) or OpenCode.
+
+Agent models are the GPT-5.6 family only: luna / terra / sol, each with a
+supported reasoning (thinking) level.
 """
 from __future__ import annotations
 
@@ -18,6 +21,29 @@ from typing import Any
 
 # Basename GEPA engines look up on PATH / rewrite to an absolute path.
 GEPA_AGENT_ENTRY = Path(__file__).name
+
+# GPT-5.6 family used by this skill (Codex slugs). OpenCode uses openai/<slug>.
+GPT56_FAMILY: dict[str, dict[str, Any]] = {
+    "luna": {
+        "slug": "gpt-5.6-luna",
+        "default_effort": "medium",
+        "efforts": frozenset({"low", "medium", "high", "xhigh", "max"}),
+    },
+    "terra": {
+        "slug": "gpt-5.6-terra",
+        "default_effort": "medium",
+        "efforts": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
+    },
+    "sol": {
+        "slug": "gpt-5.6-sol",
+        "default_effort": "low",
+        "efforts": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
+    },
+}
+DEFAULT_VARIANT = "luna"
+DEFAULT_SLUG = GPT56_FAMILY[DEFAULT_VARIANT]["slug"]
+DEFAULT_EFFORT = "high"  # optimization default; per-variant floor is applied if unsupported
+SLUG_TO_VARIANT = {meta["slug"]: name for name, meta in GPT56_FAMILY.items()}
 
 VALUE_FLAGS = frozenset({
     "--allowedTools",
@@ -46,7 +72,7 @@ BOOLEAN_FLAGS = frozenset({
     "--verbose",
 })
 
-# Upstream GEPA may pass these as --model; they are not valid Codex/OpenCode ids.
+# Upstream GEPA may pass these as --model; they are not GPT-5.6 family ids.
 _UPSTREAM_DEFAULT_MODEL_NICKNAMES = frozenset({
     "sonnet",
     "opus",
@@ -61,19 +87,13 @@ class AgentArgumentError(ValueError):
     """An unsupported agent CLI argument was supplied to the shim."""
 
 
-def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None]:
-    """Extract the printable prompt and optional system instructions.
-
-    GEPA invokes the agent entry as ``<entry> --print --output-format json ... PROMPT``.
-    ``--print`` is a boolean: treating its following token as a prompt would send
-    ``--output-format`` to Codex as a positional argument. Upstream-only controls
-    are consumed here; the shim emits GEPA's JSON result envelope itself, so
-    ``--output-format`` must not be translated to Codex's unrelated ``--output-schema``.
-    """
+def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None, str | None]:
+    """Extract prompt, system text, optional model, and optional effort."""
     printed = False
     prompt_parts: list[str] = []
     system_parts: list[str] = []
     requested_model: str | None = None
+    requested_effort: str | None = None
     index = 0
     while index < len(argv):
         argument = argv[index]
@@ -104,9 +124,9 @@ def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None]:
                     raise AgentArgumentError(f"cannot read {flag} file {value!r}: {exc}") from exc
             elif flag == "--model":
                 requested_model = value
-            # Model, max-turn, session, permissions, budget, and output-format are
-            # upstream CLI controls. Codex/OpenCode do not share their semantics,
-            # so consume them rather than forwarding invalid flags.
+            elif flag == "--effort":
+                requested_effort = value
+            # Other upstream CLI controls are consumed, not forwarded.
             index += 1
             continue
         if argument.startswith("-"):
@@ -117,7 +137,12 @@ def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None]:
         raise AgentArgumentError("only supports --print mode")
     if not prompt_parts:
         raise AgentArgumentError("--print requires a prompt")
-    return " ".join(prompt_parts), "\n\n".join(part for part in system_parts if part), requested_model
+    return (
+        " ".join(prompt_parts),
+        "\n\n".join(part for part in system_parts if part),
+        requested_model,
+        requested_effort,
+    )
 
 
 def text(value_: Any) -> str:
@@ -134,31 +159,97 @@ def text(value_: Any) -> str:
     return ""
 
 
-def _resolve_model(preferred: str | None, fallback: str | None) -> str | None:
-    """Prefer backend-specific env, then caller model, then skill default.
+def _normalize_model_token(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    token = raw.strip()
+    if not token:
+        return None
+    lowered = token.lower()
+    # OpenCode-style provider/model → bare slug
+    if "/" in lowered:
+        lowered = lowered.rsplit("/", 1)[-1]
+    # Accept bare variant names: luna / terra / sol
+    if lowered in GPT56_FAMILY:
+        return GPT56_FAMILY[lowered]["slug"]
+    if lowered.startswith("gpt-5.6-"):
+        return lowered
+    return token
 
-    Upstream GEPA default model nicknames / Anthropic-style ids are ignored so
-    Codex/OpenCode never receive an invalid model id.
-    """
-    for candidate in (preferred, fallback, os.environ.get("GEPA_DEFAULT_MODEL"), "gpt-5.6-luna"):
+
+def _is_rejected_upstream_model(token: str | None) -> bool:
+    if not token:
+        return False
+    lowered = token.strip().lower()
+    if "/" in lowered:
+        lowered = lowered.rsplit("/", 1)[-1]
+    return (
+        lowered in _UPSTREAM_DEFAULT_MODEL_NICKNAMES
+        or lowered.startswith("claude")
+        or lowered.startswith("anthropic/")
+        or token.strip().lower().startswith("anthropic/")
+    )
+
+
+def _resolve_variant_and_effort(
+    preferred_model: str | None,
+    fallback_model: str | None,
+    preferred_effort: str | None,
+    fallback_effort: str | None,
+) -> tuple[str, str, str]:
+    """Return (variant, codex_slug, effort) for the GPT-5.6 family."""
+    candidates = (
+        preferred_model,
+        fallback_model,
+        os.environ.get("GEPA_DEFAULT_MODEL"),
+        DEFAULT_SLUG,
+    )
+    slug = DEFAULT_SLUG
+    for candidate in candidates:
+        if _is_rejected_upstream_model(candidate):
+            continue
+        normalized = _normalize_model_token(candidate)
+        if not normalized:
+            continue
+        if normalized in SLUG_TO_VARIANT:
+            slug = normalized
+            break
+        # Unknown non-family id → fall back to default rather than pass through.
+        if normalized.startswith("gpt-5.6-"):
+            # allow only known family slugs
+            continue
+    variant = SLUG_TO_VARIANT[slug]
+    meta = GPT56_FAMILY[variant]
+    # Prefer CLI --effort (engine_config) over env defaults the overlay injects.
+    effort_candidates = (
+        fallback_effort,
+        preferred_effort,
+        os.environ.get("GEPA_REASONING_EFFORT"),
+        os.environ.get("GEPA_MODEL_VARIANT"),  # OpenCode naming alias
+        DEFAULT_EFFORT,
+        meta["default_effort"],
+    )
+    effort = meta["default_effort"]
+    for candidate in effort_candidates:
         if not candidate:
             continue
         lowered = candidate.strip().lower()
-        if (
-            lowered in _UPSTREAM_DEFAULT_MODEL_NICKNAMES
-            or lowered.startswith("claude")
-            or lowered.startswith("anthropic/")
-        ):
-            continue
-        return candidate
-    return "gpt-5.6-luna"
+        if lowered in meta["efforts"]:
+            effort = lowered
+            break
+    return variant, slug, effort
+
+
+def _opencode_model_id(slug: str) -> str:
+    configured = os.environ.get("GEPA_OPENCODE_PROVIDER", "openai").strip() or "openai"
+    return f"{configured}/{slug}"
 
 
 if "--print" not in sys.argv[1:]:
     print("gepa agent shim only supports --print mode", file=sys.stderr)
     raise SystemExit(2)
 try:
-    prompt, system_prompt, requested_model = parse_agent_request(sys.argv[1:])
+    prompt, system_prompt, requested_model, requested_effort = parse_agent_request(sys.argv[1:])
 except AgentArgumentError as exc:
     print(f"gepa agent shim {exc}", file=sys.stderr)
     raise SystemExit(2)
@@ -172,29 +263,59 @@ if backend not in {"codex", "opencode"}:
     )
     raise SystemExit(2)
 
+env_effort = os.environ.get("GEPA_REASONING_EFFORT") or os.environ.get("GEPA_MODEL_VARIANT")
+
 if backend == "codex":
     executable = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if not executable:
         print("gepa Codex shim: `codex` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
-    command = [executable, "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", os.getcwd()]
-    model = _resolve_model(os.environ.get("GEPA_CODEX_MODEL"), requested_model)
-    if model:
-        command += ["--model", model]
-    # Use stdin rather than a positional prompt so any prompt beginning with
-    # dashes is unambiguously data. System-prompt content is folded into stdin
-    # because Codex has no separate system-prompt flag matching the upstream CLI.
-    command.append("-")
-else:  # backend == "opencode" (validated above)
+    _, slug, effort = _resolve_variant_and_effort(
+        os.environ.get("GEPA_CODEX_MODEL"),
+        requested_model,
+        env_effort,
+        requested_effort,
+    )
+    command = [
+        executable,
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-C",
+        os.getcwd(),
+        "--model",
+        slug,
+        "-c",
+        f"model_reasoning_effort={effort}",
+        # stdin carries the prompt so leading dashes stay data.
+        "-",
+    ]
+else:  # backend == "opencode"
     executable = os.environ.get("OPENCODE_BIN") or shutil.which("opencode")
     if not executable:
         print("gepa OpenCode shim: `opencode` was not found on PATH", file=sys.stderr)
         raise SystemExit(127)
-    command = [executable, "run", "--format", "json", "--auto", "--dir", os.getcwd()]
-    model = _resolve_model(os.environ.get("GEPA_OPENCODE_MODEL"), requested_model)
-    if model:
-        command += ["--model", model]
-    command.append(prompt)
+    _, slug, effort = _resolve_variant_and_effort(
+        os.environ.get("GEPA_OPENCODE_MODEL"),
+        requested_model,
+        env_effort,
+        requested_effort,
+    )
+    command = [
+        executable,
+        "run",
+        "--format",
+        "json",
+        "--auto",
+        "--dir",
+        os.getcwd(),
+        "--model",
+        _opencode_model_id(slug),
+        "--variant",
+        effort,
+        prompt,
+    ]
+
 completed = subprocess.run(
     command,
     capture_output=True,

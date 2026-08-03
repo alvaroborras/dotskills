@@ -182,7 +182,9 @@ class BackendSandboxTests(unittest.TestCase):
                 **os.environ,
                 "GEPA_AGENT_BACKEND": "codex",
                 "CODEX_BIN": str(executable),
-                "GEPA_CODEX_MODEL": "gpt-5.2-codex",
+                "GEPA_CODEX_MODEL": "terra",
+                # Overlay-style default; CLI --effort high must win.
+                "GEPA_REASONING_EFFORT": "medium",
             },
             capture_output=True,
             check=False,
@@ -194,7 +196,8 @@ class BackendSandboxTests(unittest.TestCase):
             arguments.read_text().splitlines(),
             [
                 "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
-                "-C", str(self.work), "--model", "gpt-5.2-codex", "-",
+                "-C", str(self.work), "--model", "gpt-5.6-terra",
+                "-c", "model_reasoning_effort=high", "-",
             ],
         )
         self.assertEqual(

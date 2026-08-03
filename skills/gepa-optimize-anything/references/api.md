@@ -125,18 +125,29 @@ e.g. **candidate-selection**, **acceptance-criterion**, **batch-sampling**, **ca
 ### Agentic backends (Codex / OpenCode only)
 `autoresearch` and `meta_harness` shell out through this skill's agent shim, which always re-execs
 **Codex** (`GEPA_AGENT_BACKEND=codex`, default) or **OpenCode** (`GEPA_AGENT_BACKEND=opencode`).
-Put the skill `bin/` first on PATH, authenticate the selected CLI, and set the agent model with
-`GEPA_CODEX_MODEL` / `GEPA_OPENCODE_MODEL` (default `gpt-5.6-luna`). Upstream package defaults for
-`engine_config["model"]` are ignored by the shim when those env vars are set (the overlay sets them).
+Put the skill `bin/` first on PATH and authenticate the selected CLI.
+
+**GPT-5.6 family (only supported agent models):**
+
+| variant | Codex slug | OpenCode id | default thinking level | thinking levels |
+|---|---|---|---|---|
+| **luna** (skill default) | `gpt-5.6-luna` | `openai/gpt-5.6-luna` | `medium` (model) / skill default `high` | `low` `medium` `high` `xhigh` `max` |
+| **terra** | `gpt-5.6-terra` | `openai/gpt-5.6-terra` | `medium` | same + `ultra` |
+| **sol** | `gpt-5.6-sol` | `openai/gpt-5.6-sol` | `low` | same + `ultra` |
+
+Set model with `GEPA_CODEX_MODEL` / `GEPA_OPENCODE_MODEL` (or bare `luna`/`terra`/`sol`).
+Set thinking level with `GEPA_REASONING_EFFORT` (alias `GEPA_MODEL_VARIANT`) or
+`engine_config={"effort": "high"}` — forwarded as Codex `-c model_reasoning_effort=…` or
+OpenCode `--variant …`. Skill defaults: **luna + high**.
 
 ### `autoresearch` — `engine_config` → `AutoResearchConfig`
 | key | default | meaning |
 |---|---|---|
-| `model` | *(ignored by shim when `GEPA_*_MODEL` set)* | upstream field; skill uses Codex/OpenCode model env instead. |
+| `model` | *(ignored when `GEPA_*_MODEL` set)* | upstream field; skill prefers Codex/OpenCode model env. |
 | `ralph` | forced `False` by this skill | upstream multi-turn resume is not bridged to Codex/OpenCode. |
 | `max_no_eval_seconds` | `None` | kill the subprocess after this long with no eval call. |
 | `handoffs` | `None` | prior-stage artifacts for sequential compositions (materialized under `handoff/`). |
-| `effort` | `None` | consumed by the shim; not forwarded to Codex/OpenCode. |
+| `effort` | skill default `high` | GPT-5.6 thinking level (`low`/`medium`/`high`/`xhigh`/`max`; terra/sol also `ultra`). |
 | `max_thinking_tokens` | `None` | fixed thinking-token budget env for the agent process when set. |
 
 The engine lays out a work dir (`program.md`, `candidate.txt`, `best_candidate.txt`, `eval.sh`) and
@@ -147,10 +158,10 @@ via `max_token_cost`. Train and val are one combined pool; the test set is unrea
 ### `meta_harness` — `engine_config` → `MetaHarnessConfig`
 | key | default | meaning |
 |---|---|---|
-| `model` | *(ignored by shim when `GEPA_*_MODEL` set)* | upstream field; skill uses Codex/OpenCode model env instead. |
+| `model` | *(ignored when `GEPA_*_MODEL` set)* | upstream field; skill prefers Codex/OpenCode model env. |
 | `max_iterations` | `None` | hard cap on proposer sessions; `None` = until budget. |
 | `max_candidates_per_iter` | `3` | upper bound on candidates proposed per iteration. |
-| `effort` | `None` | consumed by the shim; not forwarded to Codex/OpenCode. |
+| `effort` | skill default `high` | GPT-5.6 thinking level (same values as autoresearch). |
 | `max_thinking_tokens` | `None` | fixed thinking-token budget when set. |
 
 Each iteration the proposer subprocess reads the frontier + history state files, writes

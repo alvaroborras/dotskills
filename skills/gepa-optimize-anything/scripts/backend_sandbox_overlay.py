@@ -20,7 +20,9 @@ from pathlib import Path
 from types import ModuleType
 
 OVERLAY_VERSION = "GEPA_SKILL_BACKEND_OVERLAY_V3"
+# GPT-5.6 family: luna (default), terra, sol. Reasoning via GEPA_REASONING_EFFORT.
 DEFAULT_AGENT_MODEL = "gpt-5.6-luna"
+DEFAULT_REASONING_EFFORT = "high"
 # Basename GEPA engines look up on PATH (upstream hardcode). Skill ships the
 # shim under this name solely so ``shutil.which`` / argv[0] resolution succeeds.
 _ENTRY_BASENAME = "claude"
@@ -193,6 +195,7 @@ def _agent_env(env: dict | None = None) -> dict[str, str]:
     backend = selected_backend()
     out["GEPA_AGENT_BACKEND"] = backend
     out.setdefault("GEPA_DEFAULT_MODEL", DEFAULT_AGENT_MODEL)
+    out.setdefault("GEPA_REASONING_EFFORT", DEFAULT_REASONING_EFFORT)
     if backend == "codex":
         out.setdefault("GEPA_CODEX_MODEL", out.get("GEPA_DEFAULT_MODEL", DEFAULT_AGENT_MODEL))
     else:
