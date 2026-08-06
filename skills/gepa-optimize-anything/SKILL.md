@@ -135,6 +135,43 @@ export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
    (only a warning). **Size `max_evals` for many proposal rounds, not one** (see below) — this is the
    most common way agents misuse this API.
 
+### Parallel proposals within a GEPA step
+By default, the gepa backend proposes one mutation per step. GEPA 0.1.4+ can instead propose and
+evaluate a batch of mutations in parallel by setting two fields inside
+`OptimizeAnythingConfig.engine_config["engine"]`:
+
+```python
+from gepa.strategies.proposal_sampling import PxNSampling
+from gepa.strategies.proposal_selection import AllImprovements
+
+config = OptimizeAnythingConfig(
+    engine="gepa",
+    max_concurrency=64,                 # eval-server concurrency
+    engine_config={
+        "engine": {
+            "sampling_strategy": PxNSampling(p=2, n=2),  # 2 parents × 2 mutations = 4 proposals/step
+            "selection_strategy": AllImprovements(),      # retain every accepted improvement
+            "max_workers": 64,                            # GEPA evaluation workers
+        },
+    },
+)
+```
+
+`PxNSampling(p=P, n=N)` samples `P` Pareto-frontier parents and proposes `N` mutations for each,
+so each step explores `P * N` candidates. Their reflection requests, mini-batch screening, and
+accepted-candidate validation are dispatched concurrently. `AllImprovements()` is the companion
+selection strategy for retaining all proposals that improve their parent; it is especially useful
+when a batch contains complementary candidates. This is different from `optimize_parallel`, which
+runs independent optimizer configurations as separate branches.
+
+Start with `2×2` or `2×4`, then increase width only when the evaluator and provider can sustain it.
+`max_concurrency` is the eval-server thread pool, while `engine.max_workers` is GEPA's worker pool;
+both must account for provider rate limits and available CPU/GPU/cluster capacity. Wider batches
+reduce the number of adaptive steps for a fixed proposal budget and can improve generalization, but
+full validation may fan out for every accepted candidate and returns diminish once the worker pool
+is saturated. Keep `max_evals` based on total metric calls, not `P * N`: a width-4 run still needs
+roughly 15–20 proposals per selection example, but completes them in fewer steps.
+
 ## Sizing the valset and the budget (read this — the #1 mistake)
 `max_evals` is the *main* control over how long the optimizer runs. Leave it at the default (100)
 with a large valset, or set it too low, and the run stops after a **single proposal**, then reports
@@ -183,6 +220,8 @@ The example optimizes a system prompt for concreteness, but the **shape is ident
 candidate — swap `SEED` for a code file / config / etc. and have `evaluate` compile/run/measure it.
 ```python
 from gepa.optimize_anything import optimize_anything, OptimizeAnythingConfig
+from gepa.strategies.proposal_sampling import PxNSampling
+from gepa.strategies.proposal_selection import AllImprovements
 
 SEED = "You are an expert. Solve the task. Output only the final answer."
 
@@ -209,7 +248,7 @@ result = optimize_anything(
         name="my_run",
         max_evals=300,               # ≳ 15-20 × len(valset): enough for ~15-20 proposals (see above)
         stop_at_score=1.0,           # stop at the optimum (set when your metric has a known ceiling)
-        max_concurrency=16,
+        max_concurrency=64,              # match evaluator/provider capacity
         run_dir="runs/my_run",       # engine workspace (gepa run dir / agent work dir)
         output_dir="outputs/my_run", # eval server: per-eval JSON, progress_log.jsonl, summary.json
         engine_config={              # gepa backend: a GEPAConfig-shaped dict, validated strictly —
@@ -218,7 +257,12 @@ result = optimize_anything(
                 "reflection_lm": "openai/gpt-5.1",
                 "reflection_minibatch_size": 5,
             },
-            "engine": {"max_workers": 32, "seed": 0},  # seed = reproducibility
+            "engine": {
+                "max_workers": 64,
+                "seed": 0,
+                "sampling_strategy": PxNSampling(p=2, n=2),  # 4 proposals per step
+                "selection_strategy": AllImprovements(),
+            },
         },
     ),
 )

@@ -94,6 +94,20 @@ your evaluator stops the whole optimization. Either catch failures yourself and 
 `engine_config={"engine": {"raise_on_exception": False}}` to have them auto-converted to score
 `0.0` with `info["error"]`.
 
+## 11. Parallel proposal width can saturate evaluation capacity
+GEPA 0.1.4+ supports batched proposals with `PxNSampling(p=P, n=N)`. A step can issue `P * N`
+reflection and screening requests, and accepted proposals can all trigger full validation. Do not
+choose width from the model context alone:
+
+- `OptimizeAnythingConfig.max_concurrency` controls the eval-server pool.
+- `engine_config["engine"]["max_workers"]` controls GEPA's evaluation workers.
+- The evaluator and inference provider may impose lower CPU/GPU, connection, or rate-limit ceilings.
+
+Start with `P=2, N=2` or `P=2, N=4`, measure wall-clock time and rejection/acceptance rates, then
+increase width only if workers are genuinely utilized. Excessive width can queue requests, trigger
+rate limits, increase validation fan-out, and erase the expected speedup. Use a side-effect-free,
+retry-safe evaluator because concurrent proposals may be evaluated in any order.
+
 ## Quick pre-flight checklist
 - [ ] mode matches intent (single-task / multi-task / generalization) via `dataset`/`valset`
 - [ ] `dataset` contains examples the seed gets WRONG — reflection has no failure signal to learn
@@ -108,6 +122,7 @@ your evaluator stops the whole optimization. Either catch failures yourself and 
       single-task) — see SKILL.md
 - [ ] `stop_at_score` set when the metric has a ceiling; `max_token_cost` for agentic backends
 - [ ] `engine_config` keys match the chosen backend (typos raise `TypeError`, #5)
+- [ ] for GEPA parallel proposals: `PxNSampling(p, n)` width fits both concurrency knobs and provider limits
 - [ ] `run_dir` + `output_dir` set (so artifacts persist)
 - [ ] `test_set` passed if you need an unbiased number to report
 - [ ] for agentic backends: skill `bin/` on PATH, Codex or OpenCode installed + authed, `jq`

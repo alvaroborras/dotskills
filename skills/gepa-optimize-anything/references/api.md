@@ -56,7 +56,7 @@ you want an unbiased number to report; skip it otherwise.
 | `name` | `None` | run id (logging + default output dir). Auto-generated (`<engine>-<uuid>-<timestamp>`) if `None`. |
 | `max_evals` | **`100`** | server-side cap on eval calls. `None` = unlimited. Size it — the default is rarely right (see SKILL.md). |
 | `max_token_cost` | `None` | USD cap on the engine's **own** optimizer-LLM spend (reflection/agent). Enforced by the engine (gepa: `max_reflection_cost` stopper; agent engines: `--max-budget-usd`), not the eval server. |
-| `max_concurrency` | `8` | eval-server thread-pool size. |
+| `max_concurrency` | `8` | eval-server thread-pool size. For GEPA, size this with `engine.max_workers` and provider rate limits in mind. |
 | `output_dir` | `None` | where the eval server writes per-eval JSON, `progress_log.jsonl`, `summary.json`. `None` → `outputs/optimize_anything/<task>/<engine>/<timestamp>/`. |
 | `run_dir` | `None` | engine workspace (gepa run dir / agent work dir; with `engine.write_agent_state=True` the gepa backend writes an agent-readable `iterations/` + `pareto/` tree here). Distinct from `output_dir`. `None` → subprocess engines use a tempdir; set it to persist artifacts. |
 | `stop_at_score` | `None` | early-stop score threshold; each engine interprets it. |
@@ -102,6 +102,8 @@ engine_config={
     "engine": {                          # -> EngineConfig (all optional, sensible defaults)
         "max_workers": 32,               # parallel eval workers (default: cpu_count or 32)
         "seed": 0,                       # reproducibility
+        "sampling_strategy": PxNSampling(p=2, n=2),  # optional: P parents × N mutations per step
+        "selection_strategy": AllImprovements(),      # optional: keep every accepted improvement
         "frontier_type": "hybrid",       # "instance" | "objective" | "hybrid" (default) | "cartesian"
         "candidate_selection_strategy": "pareto",      # | "current_best" | "epsilon_greedy" | "top_k_pareto"
         "acceptance_criterion": "strict_improvement",  # | "improvement_or_equal"
@@ -117,6 +119,24 @@ engine_config={
     # "stop_callbacks": [...],           # custom StopperProtocol stop conditions
 }
 ```
+For parallel proposals, import the strategy objects before constructing the config:
+
+```python
+from gepa.strategies.proposal_sampling import PxNSampling
+from gepa.strategies.proposal_selection import AllImprovements
+```
+
+`PxNSampling(p=P, n=N)` makes one GEPA step sample `P` Pareto-frontier parents and generate `N`
+mutations per parent, for `P * N` proposals evaluated concurrently. `AllImprovements()` retains
+every proposal that passes the acceptance criterion, allowing complementary improvements from the
+same batch to expand the frontier. This is within one GEPA run; `optimize_parallel` below instead
+runs independent configurations concurrently.
+
+The two concurrency knobs have different scopes: `OptimizeAnythingConfig.max_concurrency` sizes the
+evaluation server's thread pool, while `engine_config["engine"]["max_workers"]` sizes GEPA's worker
+pool. Set both high enough for the chosen `P * N` width, but no higher than the evaluator, machine,
+or inference provider can support. Full validation can fan out across all accepted proposals, so
+wide batches may saturate workers and show diminishing wall-clock returns.
 The nested dataclasses live in `gepa.gepa_launcher` (`EngineConfig`, `ReflectionConfig`,
 `TrackingConfig`, `MergeConfig`, `RefinerConfig`); their knobs are documented in the GEPA guides —
 e.g. **candidate-selection**, **acceptance-criterion**, **batch-sampling**, **callbacks**,
