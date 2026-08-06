@@ -79,7 +79,7 @@ def verify(python: Path, site_packages: Path) -> None:
 import gepa.oa.sandbox as sandbox
 import gepa.oa.engines.autoresearch as autoresearch
 import gepa.oa.engines.meta_harness as meta_harness
-assert sandbox.GEPA_SKILL_BACKEND_OVERLAY == 'GEPA_SKILL_BACKEND_OVERLAY_V3'
+assert sandbox.GEPA_SKILL_BACKEND_OVERLAY == 'GEPA_SKILL_BACKEND_OVERLAY_V4'
 assert sandbox.bwrap_prefix.__module__ == 'gepa_skill_backend_sandbox_overlay'
 assert autoresearch.bwrap_prefix is sandbox.bwrap_prefix
 assert meta_harness.bwrap_prefix is sandbox.bwrap_prefix

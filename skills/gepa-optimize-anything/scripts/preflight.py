@@ -19,8 +19,9 @@ from pathlib import Path
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_MARKER = "_GEPA_SKILL_PREFLIGHT_RUNTIME"
-# Basename GEPA engines resolve on PATH (upstream hardcode); skill ships the shim here.
-_AGENT_ENTRY = "claude"
+# Explicit Codex/OpenCode entrypoint installed by this skill. The overlay
+# rewrites GEPA's legacy internal agent slot to this absolute executable.
+_AGENT_ENTRY = "gepa-agent"
 
 
 def _skill_python() -> Path:
@@ -199,7 +200,7 @@ def main() -> int:
         executable = _configured_cli(backend)
         check(f"{backend.title()} CLI on PATH (required by {a.engine})", bool(executable),
               f"install {backend.title()} and authenticate a provider")
-        check("bundled Codex/OpenCode agent shim", os.path.isfile(shim),
+        check("bundled Codex/OpenCode agent entrypoint", os.path.isfile(shim),
               f"restore {shim}")
         if not os.path.isdir(os.path.join(skill_root, ".venv")):
             check("skill virtualenv present", False,

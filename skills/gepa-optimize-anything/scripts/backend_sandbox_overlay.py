@@ -19,13 +19,16 @@ from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
 
-OVERLAY_VERSION = "GEPA_SKILL_BACKEND_OVERLAY_V3"
+OVERLAY_VERSION = "GEPA_SKILL_BACKEND_OVERLAY_V4"
 # GPT-5.6 family: luna (default), terra, sol. Reasoning via GEPA_REASONING_EFFORT.
 DEFAULT_AGENT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "high"
-# Basename GEPA engines look up on PATH (upstream hardcode). Skill ships the
-# shim under this name solely so ``shutil.which`` / argv[0] resolution succeeds.
-_ENTRY_BASENAME = "claude"
+# The skill exposes an explicit backend-neutral entrypoint. Upstream GEPA still
+# constructs a legacy token internally; the overlay rewrites that token to the
+# absolute Codex/OpenCode entrypoint before subprocess creation. It is never
+# resolved on PATH and no Claude Code binary is called.
+_ENTRY_BASENAME = "gepa-agent"
+_UPSTREAM_ENTRY_BASENAME = "claude"
 
 
 def _skill_root() -> Path:
@@ -50,7 +53,13 @@ AGENTIC_CALLERS = (
 def selected_backend(value: str | None = None) -> str:
     backend = (value or os.environ.get("GEPA_AGENT_BACKEND") or "codex").lower()
     if backend not in BACKENDS:
-        raise RuntimeError(f"unsupported GEPA_AGENT_BACKEND={backend!r}; expected one of {BACKENDS}")
+        raise RuntimeError(
+            "GEPA backend selection failed: unsupported backend\n"
+            f"  configured: GEPA_AGENT_BACKEND={backend!r}\n"
+            f"  supported: {', '.join(BACKENDS)}\n"
+            "  fix: export GEPA_AGENT_BACKEND=codex  # or opencode\n"
+            "  note: Claude Code and other backends are intentionally rejected"
+        )
     return backend
 
 
@@ -58,10 +67,23 @@ def _resolve_binary(backend: str) -> Path:
     env_name = "CODEX_BIN" if backend == "codex" else "OPENCODE_BIN"
     candidate = os.environ.get(env_name) or shutil.which(backend)
     if not candidate:
-        raise RuntimeError(f"{backend} executable not found; set {env_name} or put it on PATH")
+        raise RuntimeError(
+            f"GEPA {backend} executable resolution failed\n"
+            f"  backend: {backend}\n"
+            f"  override: {env_name}={os.environ.get(env_name) or '(unset)'}\n"
+            f"  PATH lookup: {shutil.which(backend) or '(not found)'}\n"
+            f"  fix: set {env_name}=/absolute/path/to/{backend}, or put {backend} on PATH"
+        )
     path = Path(candidate).expanduser().resolve()
-    if not path.is_file():
-        raise RuntimeError(f"{env_name} does not name an executable file: {path}")
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(
+            f"GEPA {backend} executable is invalid\n"
+            f"  source: {env_name if os.environ.get(env_name) else 'PATH'}\n"
+            f"  resolved: {path}\n"
+            f"  exists: {path.is_file()}\n"
+            f"  executable: {os.access(path, os.X_OK)}\n"
+            f"  fix: point {env_name} at an executable {backend} CLI"
+        )
     return path
 
 
@@ -148,7 +170,13 @@ def bwrap_prefix(work_dir: str | Path, *, extra_writable=None, backend=None, hom
     work = Path(work_dir).resolve()
     state = prepare_backend_state(backend, home=home)
     if state["missing"]:
-        raise RuntimeError("missing required backend state: " + ", ".join(map(str, state["missing"])))
+        raise RuntimeError(
+            "GEPA sandbox backend state is incomplete: missing required backend state\n"
+            f"  backend: {backend}\n"
+            f"  home: {home}\n"
+            f"  missing: {', '.join(map(str, state['missing']))}\n"
+            f"  fix: authenticate {backend} outside GEPA so its state exists, then rerun preflight"
+        )
     executable = _resolve_binary(backend)
     shim, interpreter_target, runtime_alias_root, runtime_root = _shim_interpreter()
     venv = SKILL_ROOT / ".venv"
@@ -216,11 +244,11 @@ def _is_shim_path(token: object) -> bool:
 
 
 def _is_upstream_entry_token(token: object) -> bool:
-    """True for the bare upstream basename or a non-skill binary of that name."""
+    """True for GEPA's legacy internal agent slot, never a runnable backend."""
     text = str(token)
-    if text == _ENTRY_BASENAME:
+    if text == _UPSTREAM_ENTRY_BASENAME:
         return True
-    if text.endswith(f"/{_ENTRY_BASENAME}") and not _is_shim_path(text):
+    if text.endswith(f"/{_UPSTREAM_ENTRY_BASENAME}") and not _is_shim_path(text):
         return True
     return False
 

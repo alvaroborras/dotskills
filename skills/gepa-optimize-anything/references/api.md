@@ -123,9 +123,13 @@ e.g. **candidate-selection**, **acceptance-criterion**, **batch-sampling**, **ca
 **cost-tracking**, **experiment-tracking** — see <https://gepa-ai.github.io/gepa/guides/>.
 
 ### Agentic backends (Codex / OpenCode only)
-`autoresearch` and `meta_harness` shell out through this skill's agent shim, which always re-execs
+`autoresearch` and `meta_harness` shell out through this skill's `gepa-agent` entrypoint, which always re-execs
 **Codex** (`GEPA_AGENT_BACKEND=codex`, default) or **OpenCode** (`GEPA_AGENT_BACKEND=opencode`).
 Put the skill `bin/` first on PATH and authenticate the selected CLI.
+There is no Claude Code fallback. When importing the skill's GEPA installation
+from a different Python runtime, call `scripts/bootstrap_host_runtime.py`'s
+`bootstrap()` before importing `gepa.optimize_anything`; this applies the
+Codex/OpenCode process rewrite in the host interpreter.
 
 **GPT-5.6 family (only supported agent models):**
 

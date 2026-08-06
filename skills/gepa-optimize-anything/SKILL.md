@@ -36,9 +36,9 @@ argument** — and the same code runs under any of them:
 - **`gepa`** — the GEPA optimizer: reflective evolutionary search, in-process (an LLM reflects on
   feedback and mutates candidates; keeps a Pareto frontier). The default; strongest when feedback
   is rich.
-- **`autoresearch`** — an agentic optimizer: one OpenCode subprocess iterates like a researcher in
-  a work dir, scoring candidates through an HTTP eval server.
-- **`meta_harness`** — an agentic proposer (OpenCode subprocess) that reads the frontier/history each
+- **`autoresearch`** — an agentic optimizer: one Codex (default) or OpenCode subprocess iterates
+  like a researcher in a work dir, scoring candidates through an HTTP eval server.
+- **`meta_harness`** — an agentic Codex/OpenCode proposer that reads the frontier/history each
   iteration and writes new candidates for the engine to benchmark.
 
 (There is also a `best_of_n` engine — sample N independent candidates, keep the best. It is
@@ -91,7 +91,7 @@ pip install "gepa[full]"   # [full] pulls cloudpickle — needed to pickle closu
 # Proposer LLM: the gepa backend's reflection LM defaults to "openai/gpt-5.1" (a LiteLLM id) —
 # set OPENAI_API_KEY, or pass another LiteLLM id / Bedrock ARN / custom LM-protocol callable.
 # Agentic backends (autoresearch / meta_harness) use ONLY Codex or OpenCode via this skill's
-# shim. Put the skill bin first on PATH (required so GEPA's agent entry resolves):
+# explicit `gepa-agent` entrypoint. No Claude Code fallback is permitted. Put the skill bin first:
 export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
 # Codex is the default; set GEPA_AGENT_BACKEND=opencode for OpenCode.
 # Agent models are the GPT-5.6 family only:
@@ -109,6 +109,15 @@ export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
 #   then rerun without `--apply` to verify the skill-owned runtime overlay
 #   (does not rewrite GEPA or uv-cache package files).
 # Smoke-check without model calls: `scripts/quick_validate.py`
+# Agent failures emit a `[GEPA_AGENT_ERROR]` block with the failing stage,
+# selected backend/model/effort, resolved executable, and targeted fixes. Prompt
+# content and credentials are never printed. Use that block to adjust the
+# GEPA_AGENT_BACKEND, *_BIN, GEPA_*_MODEL, or GEPA_REASONING_EFFORT setting.
+# If the evaluator must run under another Python (for example a project CUDA
+# environment), add this skill's `scripts/` directory to sys.path and call
+# `bootstrap_host_runtime.bootstrap()` BEFORE importing `gepa.optimize_anything`.
+# This installs the Codex/OpenCode overlay in that interpreter; skipping it is
+# a hard configuration error for agentic engines.
 ```
 
 ## Mental model (4 pieces)

@@ -21,8 +21,8 @@ PYTHON = ROOT / ".venv" / "bin" / "python"
 OVERLAY = ROOT / "scripts" / "backend_sandbox_overlay.py"
 REAPPLY = ROOT / "scripts" / "reapply_backend_sandbox.py"
 PREFLIGHT = ROOT / "scripts" / "preflight.py"
-# Basename GEPA engines resolve on PATH (upstream hardcode).
-AGENT_ENTRY = "claude"
+# Explicit backend-neutral entrypoint; the legacy upstream slot is rewritten.
+AGENT_ENTRY = "gepa-agent"
 SHIM = ROOT / "bin" / AGENT_ENTRY
 
 
@@ -134,11 +134,20 @@ class BackendSandboxTests(unittest.TestCase):
         self.assertNotIn(str(self.home / ".codex"), text)
 
     def test_unsupported_backend_fails_closed(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "unsupported"):
-            self.overlay.selected_backend("native")
+        for backend in ("native", "claude"):
+            with self.subTest(backend=backend), self.assertRaisesRegex(RuntimeError, "unsupported"):
+                self.overlay.selected_backend(backend)
+
+    def test_upstream_legacy_command_is_rewritten_to_neutral_entrypoint(self) -> None:
+        rewritten = self.overlay._rewrite_agent_cmd(
+            ["claude", "--print", "probe"],
+            str(SHIM),
+        )
+        self.assertEqual(rewritten, [str(SHIM), "--print", "probe"])
+        self.assertNotIn("claude", rewritten)
 
     def test_shim_fails_closed_for_unknown_backends(self) -> None:
-        for backend in ("native", "unknown"):
+        for backend in ("native", "unknown", "claude"):
             completed = subprocess.run(
                 [str(SHIM), "--print", "no-model-call"],
                 env={
@@ -155,6 +164,37 @@ class BackendSandboxTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 2)
                 self.assertEqual(completed.stdout, "")
                 self.assertIn("unsupported GEPA_AGENT_BACKEND", completed.stderr)
+                self.assertIn("[GEPA_AGENT_ERROR]", completed.stderr)
+                self.assertIn("stage: backend-selection", completed.stderr)
+                self.assertIn("prompt: redacted", completed.stderr)
+                self.assertIn("how_to_fix:", completed.stderr)
+
+    def test_backend_failure_reports_safe_actionable_configuration(self) -> None:
+        secret_prompt = "do-not-echo-this-prompt"
+        completed = subprocess.run(
+            [str(SHIM), "--print", secret_prompt],
+            cwd=self.work,
+            env={
+                **os.environ,
+                "GEPA_AGENT_BACKEND": "codex",
+                "CODEX_BIN": "/bin/false",
+                "GEPA_CODEX_MODEL": "terra",
+                "GEPA_REASONING_EFFORT": "xhigh",
+            },
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("[GEPA_AGENT_ERROR]", completed.stderr)
+        self.assertIn("stage: backend-execution", completed.stderr)
+        self.assertIn("backend: 'codex'", completed.stderr)
+        self.assertIn("executable: /bin/false", completed.stderr)
+        self.assertIn("model: gpt-5.6-terra", completed.stderr)
+        self.assertIn("reasoning_effort: xhigh", completed.stderr)
+        self.assertIn("prompt: redacted", completed.stderr)
+        self.assertNotIn(secret_prompt, completed.stderr)
+        self.assertIn("how_to_fix:", completed.stderr)
 
     def test_codex_shim_consumes_upstream_flags_and_emits_result_envelope(self) -> None:
         arguments = self.root / "codex-argv.txt"
@@ -287,7 +327,7 @@ class BackendSandboxTests(unittest.TestCase):
     def test_fresh_interpreter_rebinds_both_real_agentic_callers(self) -> None:
         code = (
             "from gepa.oa import sandbox; from gepa.oa.engines import autoresearch, meta_harness; "
-            "assert sandbox.GEPA_SKILL_BACKEND_OVERLAY == 'GEPA_SKILL_BACKEND_OVERLAY_V3'; "
+            "assert sandbox.GEPA_SKILL_BACKEND_OVERLAY == 'GEPA_SKILL_BACKEND_OVERLAY_V4'; "
             "assert sandbox.bwrap_prefix.__module__ == 'gepa_skill_backend_sandbox_overlay'; "
             "assert autoresearch.bwrap_prefix is sandbox.bwrap_prefix; "
             "assert meta_harness.bwrap_prefix is sandbox.bwrap_prefix; "

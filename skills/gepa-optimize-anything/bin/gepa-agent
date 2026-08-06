@@ -1,9 +1,9 @@
 #!/home/alvaro/.agents/skills/gepa-optimize-anything/.venv/bin/python
 """Codex/OpenCode agent entrypoint for GEPA agentic engines.
 
-GEPA engines exec this basename on PATH with a ``--print`` JSON contract.
-This skill never runs a third-party agent CLI under that name: the process
-always re-execs Codex (default) or OpenCode.
+The backend overlay rewrites GEPA's legacy internal agent slot to this explicit
+entrypoint before process creation. The process always re-execs Codex (default)
+or OpenCode and rejects every other backend.
 
 Agent models are the GPT-5.6 family only: luna / terra / sol, each with a
 supported reasoning (thinking) level.
@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 
 # Basename GEPA engines look up on PATH / rewrite to an absolute path.
@@ -85,6 +85,56 @@ _UPSTREAM_DEFAULT_MODEL_NICKNAMES = frozenset({
 
 class AgentArgumentError(ValueError):
     """An unsupported agent CLI argument was supplied to the shim."""
+
+
+def _option_names(argv: list[str]) -> str:
+    """Describe received controls without echoing prompts or option values."""
+    names = sorted({argument.split("=", 1)[0] for argument in argv if argument.startswith("-")})
+    return ", ".join(names) or "(none)"
+
+
+def _emit_diagnostic(
+    *,
+    stage: str,
+    reason: str,
+    backend: str | None = None,
+    executable: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    hints: tuple[str, ...] = (),
+    detail: str | None = None,
+) -> None:
+    """Print an actionable, secret-safe failure report to stderr."""
+    selected = backend or os.environ.get("GEPA_AGENT_BACKEND", "codex").lower()
+    binary_var = "CODEX_BIN" if selected == "codex" else "OPENCODE_BIN"
+    model_var = "GEPA_CODEX_MODEL" if selected == "codex" else "GEPA_OPENCODE_MODEL"
+    lines = [
+        "[GEPA_AGENT_ERROR]",
+        f"stage: {stage}",
+        f"reason: {reason}",
+        f"backend: {selected!r} (GEPA_AGENT_BACKEND)",
+        f"working_directory: {os.getcwd()}",
+        f"launcher: {Path(__file__).resolve()}",
+        f"executable: {executable or os.environ.get(binary_var) or shutil.which(selected) or '(unresolved)'} ({binary_var})",
+        f"model: {model or os.environ.get(model_var) or os.environ.get('GEPA_DEFAULT_MODEL') or DEFAULT_SLUG}",
+        f"reasoning_effort: {effort or os.environ.get('GEPA_REASONING_EFFORT') or DEFAULT_EFFORT}",
+        "prompt: redacted",
+    ]
+    if detail:
+        lines.extend(("backend_detail:", detail[-4000:]))
+    if hints:
+        lines.append("how_to_fix:")
+        lines.extend(f"  - {hint}" for hint in hints)
+    lines.append(
+        "preflight: /home/alvaro/.agents/skills/gepa-optimize-anything/scripts/preflight.py "
+        "--engine autoresearch"
+    )
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
+def _fail(*, exit_code: int, **diagnostic: Any) -> NoReturn:
+    _emit_diagnostic(**diagnostic)
+    raise SystemExit(exit_code)
 
 
 def parse_agent_request(argv: list[str]) -> tuple[str, str | None, str | None, str | None]:
@@ -246,30 +296,55 @@ def _opencode_model_id(slug: str) -> str:
 
 
 if "--print" not in sys.argv[1:]:
-    print("gepa agent shim only supports --print mode", file=sys.stderr)
-    raise SystemExit(2)
+    _fail(
+        exit_code=2,
+        stage="argument-validation",
+        reason="gepa agent shim only supports --print mode",
+        hints=("Let GEPA invoke this entrypoint; direct probes must include --print and a prompt.",),
+    )
 try:
     prompt, system_prompt, requested_model, requested_effort = parse_agent_request(sys.argv[1:])
 except AgentArgumentError as exc:
-    print(f"gepa agent shim {exc}", file=sys.stderr)
-    raise SystemExit(2)
+    _fail(
+        exit_code=2,
+        stage="argument-parsing",
+        reason=f"gepa agent shim {exc}",
+        detail=f"received option names: {_option_names(sys.argv[1:])}",
+        hints=(
+            "Compare engine_config controls with the supported flags in bin/gepa-agent.",
+            "Do not pass a backend CLI command line directly; GEPA supplies the compatibility arguments.",
+        ),
+    )
 if system_prompt:
     prompt = f"{system_prompt}\n\n{prompt}"
 backend = os.environ.get("GEPA_AGENT_BACKEND", "codex").lower()
 if backend not in {"codex", "opencode"}:
-    print(
-        f"gepa agent shim: unsupported GEPA_AGENT_BACKEND={backend!r}; expected 'codex' or 'opencode'",
-        file=sys.stderr,
+    _fail(
+        exit_code=2,
+        stage="backend-selection",
+        reason=f"unsupported GEPA_AGENT_BACKEND={backend!r}; expected 'codex' or 'opencode'",
+        backend=backend,
+        hints=(
+            "Set GEPA_AGENT_BACKEND=codex (default), or GEPA_AGENT_BACKEND=opencode.",
+            "Claude Code and other backends are intentionally rejected.",
+        ),
     )
-    raise SystemExit(2)
 
 env_effort = os.environ.get("GEPA_REASONING_EFFORT") or os.environ.get("GEPA_MODEL_VARIANT")
 
 if backend == "codex":
     executable = os.environ.get("CODEX_BIN") or shutil.which("codex")
     if not executable:
-        print("gepa Codex shim: `codex` was not found on PATH", file=sys.stderr)
-        raise SystemExit(127)
+        _fail(
+            exit_code=127,
+            stage="executable-resolution",
+            reason="Codex executable was not found",
+            backend=backend,
+            hints=(
+                "Install/authenticate Codex and ensure `codex` is on PATH.",
+                "Or set CODEX_BIN=/absolute/path/to/codex before launching GEPA.",
+            ),
+        )
     _, slug, effort = _resolve_variant_and_effort(
         os.environ.get("GEPA_CODEX_MODEL"),
         requested_model,
@@ -293,8 +368,16 @@ if backend == "codex":
 else:  # backend == "opencode"
     executable = os.environ.get("OPENCODE_BIN") or shutil.which("opencode")
     if not executable:
-        print("gepa OpenCode shim: `opencode` was not found on PATH", file=sys.stderr)
-        raise SystemExit(127)
+        _fail(
+            exit_code=127,
+            stage="executable-resolution",
+            reason="OpenCode executable was not found",
+            backend=backend,
+            hints=(
+                "Install/authenticate OpenCode and ensure `opencode` is on PATH.",
+                "Or set OPENCODE_BIN=/absolute/path/to/opencode before launching GEPA.",
+            ),
+        )
     _, slug, effort = _resolve_variant_and_effort(
         os.environ.get("GEPA_OPENCODE_MODEL"),
         requested_model,
@@ -316,13 +399,28 @@ else:  # backend == "opencode"
         prompt,
     ]
 
-completed = subprocess.run(
-    command,
-    capture_output=True,
-    check=False,
-    input=prompt if backend == "codex" else None,
-    text=True,
-)
+try:
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        check=False,
+        input=prompt if backend == "codex" else None,
+        text=True,
+    )
+except OSError as exc:
+    _fail(
+        exit_code=127,
+        stage="backend-launch",
+        reason=f"could not execute selected backend: {exc}",
+        backend=backend,
+        executable=executable,
+        model=slug,
+        effort=effort,
+        hints=(
+            "Verify the configured executable exists and has execute permission.",
+            "Run the skill preflight from the same environment and working directory.",
+        ),
+    )
 parts: list[str] = []
 for line in completed.stdout.splitlines():
     try:
@@ -343,5 +441,19 @@ print(json.dumps({
     "is_error": completed.returncode != 0, "total_cost_usd": 0.0, "usage": {},
 }))
 if completed.returncode:
-    print(completed.stderr[-4000:], file=sys.stderr, end="")
+    backend_detail = (completed.stderr or completed.stdout or "backend produced no diagnostic output").strip()
+    _emit_diagnostic(
+        stage="backend-execution",
+        reason=f"{backend} exited with status {completed.returncode}",
+        backend=backend,
+        executable=executable,
+        model=slug,
+        effort=effort,
+        detail=backend_detail,
+        hints=(
+            f"Run `{executable} --help` and verify authentication outside GEPA.",
+            "Adjust GEPA_* model/effort variables shown above, then rerun preflight.",
+            "If sandboxed, reproduce with the preflight bwrap probe before changing sandbox=False.",
+        ),
+    )
 raise SystemExit(completed.returncode)
