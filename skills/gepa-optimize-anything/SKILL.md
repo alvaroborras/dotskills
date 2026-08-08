@@ -1,144 +1,106 @@
 ---
 name: gepa-optimize-anything
 description: >-
-  Automatically improve any text artifact that can be scored — prompts, programs/code, configs,
-  specs, regex/SQL/schemas, agent scaffolds, or encoded search solutions — with optimize_anything,
-  an LLM-driven optimization API: a search backend repeatedly proposes better versions from
-  execution feedback and an evaluator you provide assigns the score (an objective metric or an
-  LLM-as-judge for subjective tasks). optimize_anything is one interface across several optimizer
-  backends — GEPA (reflective evolutionary search, the default), AutoResearch, MetaHarness — plus a
-  best-of-N baseline: write the evaluator once and switch backend with a single argument.
-  Use whenever a task needs auto-optimizing, tuning, or searching over text with any quality signal
-  (accuracy, pass rate, latency, cost, judge rating); when building an evaluator + proposer loop;
-  when running GEPA; or when comparing optimizers. The candidate can be any string an evaluator can
-  grade, scored on one problem or generalized across many.
+  Optimize any scorable text artifact—prompts, code, configurations, schemas, agent instructions,
+  or search solutions—with GEPA's evaluator-driven optimize_anything API. Use when Codex needs to
+  design an evaluator, improve a candidate through execution feedback, compare optimization engines,
+  or run AutoResearch and MetaHarness through Codex.
 ---
 
-# `optimize_anything`
+# optimize_anything
 
-**Naming, precisely.** `optimize_anything` is the tool: a general API for optimizing text
-artifacts. **GEPA** is one specific optimizer behind it — reflective evolutionary search, the
-default backend (`engine="gepa"`) — and, for legacy reasons, also the name of the Python package
-that ships all of this. In this skill, "the gepa backend" always means the optimizer; statements
-about "the optimizer" or "the backend" apply to whichever engine you chose.
+Use `optimize_anything` when a candidate can be represented as text and a program can score it.
+The evaluator owns the truth: return a higher-is-better score and actionable feedback. The optimizer
+does not inspect the evaluator's implementation.
 
-`optimize_anything` does **black-box optimization**: you provide (1) a seed artifact, (2) an
-**evaluator** that scores any artifact and returns feedback, and (3) a backend, which repeatedly
-proposes improved artifacts and scores them through your evaluator. "Black-box" refers to the
-**evaluator**, not the artifact: the backend never sees how the score is computed — no gradients,
-no metric internals — only the scalar score and the feedback text you emit. The candidate itself
-*is* visible: the proposer reads and rewrites it, applying the LLM's understanding of your artifact.
-The framework just imposes no structure on it — any string an evaluator can score works. The
-leverage is in your score and your feedback.
+## Engines
 
-**You write the task and evaluator once, then choose the search algorithm with one `engine`
-argument** — and the same code runs under any of them:
-- **`gepa`** — the GEPA optimizer: reflective evolutionary search, in-process (an LLM reflects on
-  feedback and mutates candidates; keeps a Pareto frontier). The default; strongest when feedback
-  is rich.
-- **`autoresearch`** — an agentic optimizer: one Codex (default) or OpenCode subprocess iterates
-  like a researcher in a work dir, scoring candidates through an HTTP eval server.
-- **`meta_harness`** — an agentic Codex/OpenCode proposer that reads the frontier/history each
-  iteration and writes new candidates for the engine to benchmark.
+- `gepa` — reflective evolutionary search with Pareto-aware selection; the default and usually the
+  best first choice when evaluator feedback is rich.
+- `autoresearch` — one Codex subprocess repeatedly edits and evaluates a candidate in a work tree.
+- `meta_harness` — Codex proposes several candidates from frontier/history state; the engine scores
+  each candidate and records the result.
+- `best_of_n` — independent samples retained as a comparison baseline.
 
-(There is also a `best_of_n` engine — sample N independent candidates, keep the best. It is
-deliberately naive: use it as a **baseline** to compare an optimizer against, not as the optimizer.)
+All agentic engines use the bundled `bin/gepa-agent` bridge and Codex. Do not substitute another
+agent CLI. Agent runs are intentionally unconfined because the candidate may need to compile, run,
+benchmark, and edit files. Use this skill only in a trusted workspace.
 
-This makes it easy to start with one backend and benchmark others on the identical task/evaluator.
-There are also **composition/pipeline helpers** that combine backends over the same task:
-`optimize_sequential` (a pipeline — each stage's best seeds the next), `optimize_parallel`,
-`optimize_best_of`, `optimize_vote` (re-score each branch's best for a fair pick), and an adaptive
-scheduler that rotates backends on score plateaus — see `references/api.md`.
+## Install the pinned runtime
 
-## What can be a candidate
-A candidate is **any string your evaluator can score**. "Text in → a number out (higher is better),
-plus optional feedback" is the entire contract, which covers a wide range of artifacts:
-- **prompts** — system/user prompts, instruction templates, rubrics, few-shot exemplars
-- **programs / code** — functions, whole files, CUDA kernels, scored by compiling + running + benchmarking
-- **configs / specs / schemas / regex / SQL** — any text whose effect you can measure
-- **agent scaffolds** — tool instructions, planner/critic prompts, orchestration text
-- **pure search artifacts** — a mathematical construction, a packing layout, a plan, encoded as text
+The upstream revision immediately before the default-confinement change is pinned so a fresh setup
+does not silently acquire a different process policy:
 
-The score can be an **objective metric** (accuracy, pass rate, runtime, cost) **or an LLM-as-judge**
-rating for subjective tasks (writing quality, helpfulness, style). At this API the candidate is a
-single string (`seed_candidate: str | None`; `None` = seedless — the engine bootstraps from
-`objective`/`background`). Multi-component dict candidates exist only in the lower-level
-`gepa.gepa_launcher.optimize_anything` API, not here.
-
-## Three optimization modes (choose by how you pass data)
-The mode is determined by whether you provide `dataset` and `valset`:
-1. **Single-task** (`dataset=None, valset=None`) — solve one hard problem; the candidate *is* the
-   solution; the evaluator is called with no example. *E.g. one CUDA kernel, a circle-packing layout.*
-2. **Multi-task** (`dataset=<list>, valset=None`) — solve a batch of related problems with one shared
-   candidate, transferring insight across them; evaluator called per example. *E.g. a single prompt
-   that works across many tasks.*
-3. **Generalization** (`dataset=<list>, valset=<list>`) — build a candidate that transfers to
-   **unseen** problems; optimize on `dataset`, select on `valset`. *E.g. a prompt tuned to generalize.*
-   *Note:* GEPA is the algorithm designed around this mode, and `valset`-based held-out selection is
-   currently implemented only by the gepa backend — the other backends fold `valset` into the
-   training pool (they can still generalize; there's just no separate selection split).
-
-`test_set` is **separate from the modes and reporting-only**: the seed and the final candidate are
-scored on it after optimization for an unbiased number — it never enters the search, selection, or
-budget (for the agentic backends it is sealed at the eval server's HTTP layer, so the agent cannot
-even see it). See `references/api.md` for details and when to use each mode.
-
-## Install
 ```bash
-pip install "gepa[full]"   # [full] pulls cloudpickle — needed to pickle closure evaluators for
-                           # parallel workers / opt-in evaluation caching; plain `pip install gepa`
-                           # can fail there when your evaluator closes over data.
-# Proposer LLM: the gepa backend's reflection LM defaults to "openai/gpt-5.1" (a LiteLLM id) —
-# set OPENAI_API_KEY, or pass another LiteLLM id / Bedrock ARN / custom LM-protocol callable.
-# Agentic backends (autoresearch / meta_harness) use ONLY Codex or OpenCode via this skill's
-# explicit `gepa-agent` entrypoint. No Claude Code fallback is permitted. Put the skill bin first:
+cd /home/alvaro/.agents/skills/gepa-optimize-anything
+python3 -m venv .venv
+.venv/bin/pip install "gepa[full] @ git+https://github.com/gepa-ai/gepa.git@2059343dfcc622aab67943b4ce98184ae302661a"
+python scripts/reapply_codex_runtime.py --apply
 export PATH="/home/alvaro/.agents/skills/gepa-optimize-anything/bin:$PATH"
-# Codex is the default; set GEPA_AGENT_BACKEND=opencode for OpenCode.
-# Agent models are the GPT-5.6 family only:
-#   gpt-5.6-luna (default) | gpt-5.6-terra | gpt-5.6-sol
-#   (bare names luna/terra/sol also accepted)
-# Reasoning / thinking level (default high): low | medium | high | xhigh | max
-#   terra/sol also accept ultra. Set via GEPA_REASONING_EFFORT or engine_config effort.
-# Override model: GEPA_CODEX_MODEL / GEPA_OPENCODE_MODEL (OpenCode gets openai/<slug>).
-# Authenticate the selected CLI before long runs.
-# `jq` is needed by the generated eval.sh, and Linux sandboxing needs bubblewrap.
-# Pass sandbox=False only if you intentionally want to run the agent unconfined.
-# Before an agentic run: `scripts/preflight.py --engine autoresearch`
-#   prepares only selected-backend state (`~/.codex` or OpenCode config/data/cache).
-# After refreshing this skill's venv: `scripts/reapply_backend_sandbox.py --apply`
-#   then rerun without `--apply` to verify the skill-owned runtime overlay
-#   (does not rewrite GEPA or uv-cache package files).
-# Smoke-check without model calls: `scripts/quick_validate.py`
-# Agent failures emit a `[GEPA_AGENT_ERROR]` block with the failing stage,
-# selected backend/model/effort, resolved executable, and targeted fixes. Prompt
-# content and credentials are never printed. Use that block to adjust the
-# GEPA_AGENT_BACKEND, *_BIN, GEPA_*_MODEL, or GEPA_REASONING_EFFORT setting.
-# If the evaluator must run under another Python (for example a project CUDA
-# environment), add this skill's `scripts/` directory to sys.path and call
-# `bootstrap_host_runtime.bootstrap()` BEFORE importing `gepa.optimize_anything`.
-# This installs the Codex/OpenCode overlay in that interpreter; skipping it is
-# a hard configuration error for agentic engines.
 ```
 
-## Mental model (4 pieces)
-1. **Candidate** — the text you optimize (a `str`). The seed is the start; `None` = seedless.
-2. **`evaluate(candidate, example) -> (score, info)`** — `score` is a float (higher is better);
-   `info` is a free-form dict of **feedback the backend's proposer reads** to make better candidates
-   (the gepa backend's reflection LM, or the agentic backends' agent; the `best_of_n` baseline
-   ignores feedback). When evals batch better than they stream (e.g. a provider batch API), pass
-   `batch_evaluator=` instead — all pending `(candidate, example)` pairs in one call; see
-   `references/api.md`.
-3. **Engine (backend)** — `"gepa"` (default), `"autoresearch"`, `"meta_harness"`, the `"best_of_n"`
-   baseline, or a constructed `Engine` instance.
-4. **Budget** — `max_evals` (server-side eval-call cap, **default 100**) and/or `max_token_cost`
-   (USD cap on the backend's own proposer-LLM spend). Setting both to `None` makes the run unbounded
-   (only a warning). **Size `max_evals` for many proposal rounds, not one** (see below) — this is the
-   most common way agents misuse this API.
+Set `OPENAI_API_KEY` for the in-process reflection engine. Authenticate Codex and optionally set:
 
-### Parallel proposals within a GEPA step
-By default, the gepa backend proposes one mutation per step. GEPA 0.1.4+ can instead propose and
-evaluate a batch of mutations in parallel by setting two fields inside
-`OptimizeAnythingConfig.engine_config["engine"]`:
+```bash
+export CODEX_BIN="$(command -v codex)"
+export GEPA_CODEX_MODEL=gpt-5.6-luna
+export GEPA_REASONING_EFFORT=high
+```
+
+Run `python scripts/preflight.py --engine autoresearch` before an agentic run. If the evaluator
+must use another Python environment, call `scripts/bootstrap_host_runtime.py` before importing
+`gepa.optimize_anything`.
+
+## Candidate and evaluator contract
+
+```python
+from gepa.optimize_anything import OptimizeAnythingConfig, optimize_anything
+
+def evaluate(candidate: str, example) -> tuple[float, dict]:
+    output = run_system(candidate, example)
+    score = grade(output, example)
+    return score, {"output": output, "error": getattr(output, "error", None)}
+
+result = optimize_anything(
+    seed_candidate=SEED,
+    evaluator=evaluate,
+    dataset=trainset,
+    valset=valset,
+    test_set=testset,
+    objective="Maximize task quality while preserving the required output format.",
+    background="Constraints, domain rules, and evaluator details.",
+    config=OptimizeAnythingConfig(
+        engine="gepa",
+        max_evals=300,
+        stop_at_score=1.0,
+        run_dir="runs/example",
+        output_dir="outputs/example",
+    ),
+)
+print(result.best_candidate, result.best_score)
+```
+
+The evaluator may accept `(candidate)` for a single task or `(candidate, example)` when datasets
+are supplied. Return feedback that explains failures: compiler output, diffs, partial scores, logs,
+and violated constraints are more useful than a bare number. Use `batch_evaluator` when scoring
+several candidate/example pairs is cheaper as one provider batch.
+
+## Choose the data mode
+
+- No `dataset` and no `valset`: single-task optimization.
+- `dataset` only: optimize across a shared training pool.
+- `dataset` plus `valset`: optimize on training data and select on held-out validation data.
+- `test_set`: reporting-only; it is scored after optimization and never enters the search.
+
+Size `max_evals` for many proposals, not one. A practical starting point is 15–20 times the number
+of examples in the selection set, or 15–20 for a single-task run. Add `stop_at_score` when the
+metric has a known ceiling and `max_token_cost` for agentic engines.
+
+## Parallel GEPA proposals
+
+For GEPA 0.1.4+, this skill defaults every `OptimizeAnythingConfig(engine="gepa")` to
+`PxNSampling(p=2, n=2)` plus `AllImprovements()`. That means four proposal tasks per step, with
+every accepted improvement retained. The evaluator and model provider must support concurrent work:
 
 ```python
 from gepa.strategies.proposal_sampling import PxNSampling
@@ -146,175 +108,43 @@ from gepa.strategies.proposal_selection import AllImprovements
 
 config = OptimizeAnythingConfig(
     engine="gepa",
-    max_concurrency=64,                 # eval-server concurrency
+    max_concurrency=16,
     engine_config={
         "engine": {
-            "sampling_strategy": PxNSampling(p=2, n=2),  # 2 parents × 2 mutations = 4 proposals/step
-            "selection_strategy": AllImprovements(),      # retain every accepted improvement
-            "max_workers": 64,                            # GEPA evaluation workers
-        },
+            "sampling_strategy": PxNSampling(p=2, n=2),
+            "selection_strategy": AllImprovements(),
+            "max_workers": 16,
+        }
     },
 )
 ```
 
-`PxNSampling(p=P, n=N)` samples `P` Pareto-frontier parents and proposes `N` mutations for each,
-so each step explores `P * N` candidates. Their reflection requests, mini-batch screening, and
-accepted-candidate validation are dispatched concurrently. `AllImprovements()` is the companion
-selection strategy for retaining all proposals that improve their parent; it is especially useful
-when a batch contains complementary candidates. This is different from `optimize_parallel`, which
-runs independent optimizer configurations as separate branches.
+The defaults are injected by the Codex runtime bridge, so the `engine_config["engine"]` block may be
+omitted. Supplying either strategy explicitly overrides only that strategy.
 
-Start with `2×2` or `2×4`, then increase width only when the evaluator and provider can sustain it.
-`max_concurrency` is the eval-server thread pool, while `engine.max_workers` is GEPA's worker pool;
-both must account for provider rate limits and available CPU/GPU/cluster capacity. Wider batches
-reduce the number of adaptive steps for a fixed proposal budget and can improve generalization, but
-full validation may fan out for every accepted candidate and returns diminish once the worker pool
-is saturated. Keep `max_evals` based on total metric calls, not `P * N`: a width-4 run still needs
-roughly 15–20 proposals per selection example, but completes them in fewer steps.
+Keep both concurrency limits within evaluator, CPU/GPU, and provider capacity. Make the evaluator
+retry-safe and independent of evaluation order.
 
-## Sizing the valset and the budget (read this — the #1 mistake)
-`max_evals` is the *main* control over how long the optimizer runs. Leave it at the default (100)
-with a large valset, or set it too low, and the run stops after a **single proposal**, then reports
-a "best candidate" that looks fine but is barely optimized.
+## Agentic engines
 
-- **valset** — on the gepa backend the best candidate is selected by its scores on the valset, so
-  make it a **representative subset of your data**. There is no fixed size: pick what represents the task (a
-  handful for small/expensive tasks, more when data is cheap and plentiful — anywhere from a few to
-  hundreds). Bigger valset = less noisy selection but more eval calls per candidate.
-- **budget** — every proposed candidate is scored on the **whole selection set**, so size
-  `max_evals` off that set, not off a single proposal. Which set that is depends on the mode:
-  ```
-  generalization (dataset + valset):  max_evals ≳ 15–20 × len(valset)    # scored & selected on valset
-  multi-task     (dataset only):      max_evals ≳ 15–20 × len(dataset)   # scored & selected on dataset
-  single-task    (no dataset/valset): max_evals ≳ 15–20                  # 1 eval per candidate, so this
-                                                                         #   IS the number of proposals
-  ```
-  The constant is the same everywhere — **let the backend propose AND evaluate ~15–20 candidates**
-  (more if you can afford it). Anything much less and the run tries only a couple of candidates —
-  i.e. it's barely optimizing. (This arithmetic is exact for the gepa backend — and the best_of_n
-  baseline — which score every candidate on the full selection set; the agentic backends decide
-  themselves how to spend eval calls, so treat it as a floor.)
+Put the skill's `bin` directory first on `PATH`. AutoResearch creates `program.md`, candidate files,
+and an `eval.sh` HTTP client. MetaHarness creates frontier/history state and expects each proposal
+to write `pending_eval.json`. The test set remains sealed by the evaluation server.
 
-After the run, check how many proposals actually happened (on the gepa backend,
-`result.metadata["gepa_result"]` holds every candidate; with `engine.write_agent_state=True` the
-`run_dir/iterations/` tree shows each one). **If it stopped after one proposal, the budget was too
-low** — raise it and rerun.
+Use `engine_config` fields documented in [references/api.md](references/api.md). The bridge consumes
+the upstream print-oriented command contract and invokes `codex exec --json`; it ignores unsupported
+session controls and uses a fresh Codex invocation per proposer call.
 
-### Give every run a real stop condition
-`max_evals` bounds eval calls, but add explicit stops so runs end at the right moment:
-- **`stop_at_score`** — set it whenever your metric has a known ceiling (e.g. `1.0` for a pass rate /
-  accuracy). The backend stops the moment a candidate reaches it instead of burning the rest of the
-  budget at the optimum.
-- **`max_token_cost`** — a hard USD cap on the backend's own proposer/agent LLM spend. Especially
-  important for the agentic backends (`autoresearch`, `meta_harness`), whose agent subprocesses
-  spend tokens between eval calls.
-- **a wall-clock `timeout`** on the process you launch (e.g. `timeout 1200 python run.py`) as a
-  backstop.
-- If you **opt in** to evaluation caching (`engine_config={"engine": {"cache_evaluation": True}}` on
-  the gepa backend — it is **off by default**), be aware `max_evals` then counts only cache *misses*:
-  a converged search can keep proposing cache-hitting candidates without consuming eval budget, so
-  `stop_at_score`/`max_token_cost` become mandatory, not optional.
+## Workflow
 
-## Minimal working example
-The example optimizes a system prompt for concreteness, but the **shape is identical** for any
-candidate — swap `SEED` for a code file / config / etc. and have `evaluate` compile/run/measure it.
-```python
-from gepa.optimize_anything import optimize_anything, OptimizeAnythingConfig
-from gepa.strategies.proposal_sampling import PxNSampling
-from gepa.strategies.proposal_selection import AllImprovements
+1. Choose the data mode and write a gated, non-gameable score.
+2. Include concrete diagnostic feedback in the evaluator result.
+3. Set an explicit evaluation budget, token cap, and score stop when applicable.
+4. Run preflight and a one-call reflection-LM check for long jobs.
+5. Inspect the first evaluation, then monitor accepted proposals and artifact directories.
+6. Compare the final candidate with the seed on the held-out test set.
 
-SEED = "You are an expert. Solve the task. Output only the final answer."
-
-def evaluate(candidate: str, example) -> tuple[float, dict]:
-    output = run_my_model(system_prompt=candidate, user_prompt=example["prompt"])  # your call
-    score = grade(output, example)                                                 # float, higher=better
-    return score, {                       # everything here is shown to the proposer LLM
-        "score": score,
-        "output": output,
-        "error": example.get("error"),    # concrete, actionable feedback drives good proposals
-    }
-
-result = optimize_anything(
-    seed_candidate=SEED,
-    evaluator=evaluate,
-    dataset=trainset,            # optimize on these (multi-task/generalization mode)
-    valset=valset,               # select the best candidate on these (generalization mode)
-    test_set=testset,            # OPTIONAL, reporting-only: seed + final candidate scored here at the end
-    objective="Produce a prompt that maximizes task accuracy.",
-    background="Domain rules, constraints, output format the model must follow.",
-    config=OptimizeAnythingConfig(
-        engine="gepa",               # swap to "autoresearch" / "meta_harness" — same code
-                                     #   ("best_of_n" runs the same way, as a comparison baseline)
-        name="my_run",
-        max_evals=300,               # ≳ 15-20 × len(valset): enough for ~15-20 proposals (see above)
-        stop_at_score=1.0,           # stop at the optimum (set when your metric has a known ceiling)
-        max_concurrency=64,              # match evaluator/provider capacity
-        run_dir="runs/my_run",       # engine workspace (gepa run dir / agent work dir)
-        output_dir="outputs/my_run", # eval server: per-eval JSON, progress_log.jsonl, summary.json
-        engine_config={              # gepa backend: a GEPAConfig-shaped dict, validated strictly —
-            "reflection": {          #   an unknown key raises TypeError immediately (fail fast)
-                # a LiteLLM id (set the provider key) OR any callable implementing the LM protocol
-                "reflection_lm": "openai/gpt-5.1",
-                "reflection_minibatch_size": 5,
-            },
-            "engine": {
-                "max_workers": 64,
-                "seed": 0,
-                "sampling_strategy": PxNSampling(p=2, n=2),  # 4 proposals per step
-                "selection_strategy": AllImprovements(),
-            },
-        },
-    ),
-)
-print(result.best_candidate, result.best_score)
-# held-out (only present if you passed test_set): "test_score" = average, "test_scores" = per-example
-print("held-out:", result.metadata.get("test_score"),
-      "seed held-out:", result.metadata.get("baseline_test_score"))
-```
-
-## Standard workflow
-1. **Pick the mode** (single-task / multi-task / generalization) by which of `dataset`/`valset` you pass.
-2. **Define the score deliberately.** The optimizer optimizes exactly what you measure — gate the
-   score on what you actually care about (see `references/gotchas.md`, reward hacking).
-3. **Write a feedback-rich `evaluate`.** The `info` dict is the proposer's signal — return errors,
-   diffs, partial credit, not just a number (`oa.log()` and `capture_stdio` can route diagnostics in
-   automatically). See `references/writing_evaluators.md`.
-4. **Pick a proposer LLM** — a LiteLLM id (set the provider key) or a custom LM-protocol callable.
-   Validate it with a 1-call test before a long run.
-5. **Set a budget** (`max_evals` sized per above, and/or `max_token_cost`) plus `stop_at_score` when
-   the metric has a ceiling.
-6. **Run `python scripts/preflight.py`** to fail fast on missing creds / CLI before a long run.
-7. **Launch**, watch the first 1-2 evals (the eval→model→score chain), then let it run.
-8. **Read `result.best_candidate` and `run_dir/`** (and `result.metadata["test_score"]` if you
-   passed a `test_set`).
-
-## Critical gotchas (read before a real run)
-These silently degrade *results* — skim before launching:
-- **Reward hacking.** Every backend optimizes exactly what you score; a weak proxy gets gamed (e.g. a
-  "correct"-only score → a do-nothing wrapper). Gate the score on the real goal. → `references/gotchas.md`.
-- **Selection bias.** In generalization mode the best candidate is the max over many scored on
-  `valset` — an optimistic estimate. Use enough `valset` examples (and N>1 for stochastic models), and
-  report on a `test_set` for an unbiased number. → `references/gotchas.md`.
-- **Stochastic models default to N=1 per eval** → noisy selection. Average N samples *inside*
-  `evaluate`. → `references/writing_evaluators.md`.
-- **Saturated signal → the gepa backend returns the seed unchanged.** If the seed already aces the
-  training examples, every proposal looks "not better" and is rejected (many proposals, ~0 accepted).
-  Reflection needs examples the seed gets *wrong* to learn from — ensure `dataset` has real
-  failures. → `references/gotchas.md`.
-- **`engine_config` is validated strictly per backend** — an unknown key (including a leftover key
-  from a different backend after swapping `engine=`) raises `TypeError` at construction. Swapping
-  `engine=` means swapping the `engine_config` block. → `references/api.md`.
-- **Agentic backends (`autoresearch`, `meta_harness`) shell out through the bundled Codex/OpenCode shim only**
-  and abort at launch if the selected CLI or shim is missing — likewise for `bwrap` (bubblewrap) on
-  Linux, which the default `sandbox=True` needs. `sandbox=False` runs the agent unconfined (loud
-  warning). Run `scripts/preflight.py --engine autoresearch` first; details in `references/api.md`.
-
-## Reference files (load as needed)
-- `references/api.md` — `OptimizeAnythingConfig`, the backends and their typed `engine_config`
-  options, the three modes, the LM protocol, budget/cost semantics, `Result` shape, and the
-  composition/pipeline helpers.
-- `references/writing_evaluators.md` — the `(score, info)` contract, `oa.log()`/`capture_stdio`,
-  LLM-as-judge scoring, multi-objective via `info["scores"]`, N>1 averaging, feedback design.
-- `references/tracking.md` — enabling wandb / mlflow experiment tracking and what gets logged.
-- `references/gotchas.md` — reward hacking, selection bias, the three modes, backend prerequisites.
-- `scripts/preflight.py` — validate creds / proposer LM / Codex/OpenCode before launching.
+Read [references/gotchas.md](references/gotchas.md) for reward hacking, selection bias, budget sizing,
+and agent failure modes. Read [references/writing_evaluators.md](references/writing_evaluators.md)
+when designing a new evaluator. Use [references/tracking.md](references/tracking.md) for experiment
+tracking configuration.
