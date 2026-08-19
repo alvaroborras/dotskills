@@ -122,9 +122,7 @@ Then the only way to raise the score is to be correct **and** better on what you
 
 ## Determinism & robustness
 - Make `evaluate` side-effect-free and resumable; it may run concurrently (`max_concurrency`,
-  `engine.max_workers`) and be retried. With GEPA's `PxNSampling`, several parents and mutations
-  can be evaluated concurrently in one step, including a burst of full-validation calls for
-  accepted proposals.
+  `engine.max_workers`) and be retried.
 - Set a seed in `engine_config={"engine": {"seed": 0}}` for reproducible search order.
 - Log your own per-eval record (id, score, sub-metrics, candidate hash) — you'll want it for
   analysis; the eval server's `output_dir` per-eval JSON covers the basics, and `oa.log()` covers

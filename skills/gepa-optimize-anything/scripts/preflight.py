@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Fail-fast checks for a Codex-backed optimize_anything run."""
+"""Pre-flight checks for an optimize_anything run (gepa package) — fail fast before a long job.
 
+    python preflight.py                      # checks gepa + reflection-LM creds
+    python preflight.py --engine autoresearch  # also checks the Codex bridge + jq
+    GEPA_REFLECTION_LM=openai/gpt-5.6-luna python preflight.py --test-lm
+
+Exit code 0 = all good; non-zero = at least one blocker.
+"""
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
 import sys
-from pathlib import Path
 
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_MARKER = "GEPA_SKILL_CODEX_RUNTIME_V1"
-RUNTIME_HANDOFF = "_GEPA_CODEX_PREFLIGHT_RUNTIME"
-DEFAULT_LM_BY_ENGINE = {"gepa": "openai/gpt-5.1", "best_of_n": "openai/gpt-5.1"}
 OK, BAD = "\033[32mOK\033[0m", "\033[31mFAIL\033[0m"
 problems: list[str] = []
+
+# The in-process engines use the OpenAI GPT-5.6 Luna default. Agentic engines
+# use the skill-owned Codex adapter and do not resolve a LiteLLM model here.
+DEFAULT_LM_BY_ENGINE = {"gepa": "openai/gpt-5.6-luna", "best_of_n": "openai/gpt-5.6-luna"}
 
 
 def check(label: str, ok: bool, fix: str = "") -> None:
@@ -23,173 +28,92 @@ def check(label: str, ok: bool, fix: str = "") -> None:
         problems.append(f"{label} — {fix}" if fix else label)
 
 
-def _skill_python() -> Path:
-    return SKILL_ROOT / ".venv" / "bin" / "python"
-
-
-def _handoff_to_skill_runtime() -> None:
-    expected = _skill_python().absolute()
-    active = Path(sys.executable).absolute()
-    marker = os.environ.get(RUNTIME_HANDOFF)
-    if active == expected:
-        return
-    if marker:
-        raise RuntimeError(
-            f"runtime handoff did not enter {expected}; active interpreter is {active}"
-        )
-    if not expected.is_file():
-        return
-    environment = os.environ.copy()
-    environment[RUNTIME_HANDOFF] = str(expected)
-    os.execve(
-        str(expected),
-        [str(expected), str(Path(__file__).resolve()), *sys.argv[1:]],
-        environment,
-    )
-
-
-try:
-    _handoff_to_skill_runtime()
-except RuntimeError as exc:
-    print(f"preflight runtime setup failed: {exc}", file=sys.stderr)
-    raise SystemExit(1)
-
-sys.path.insert(0, str(SKILL_ROOT / "scripts"))
-import codex_runtime
-
-
-def _creds_for(model: str) -> tuple[bool, str]:
+def _creds_for(lm: str) -> tuple[bool, str]:
+    """Best-effort provider-credential check for a LiteLLM model id."""
     has_aws = bool(
         os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
         or os.environ.get("AWS_ACCESS_KEY_ID")
         or os.environ.get("AWS_PROFILE")
     )
-    if "bedrock" in model:
-        return has_aws, "export AWS credentials"
-    if model.startswith(("openai/", "gpt-")) or "gpt-5" in model:
+    if "bedrock" in lm:
+        return has_aws, "export AWS creds (AWS_BEARER_TOKEN_BEDROCK / AWS_ACCESS_KEY_ID / AWS_PROFILE)"
+    if lm.startswith("openai/") or lm.startswith("gpt-") or "gpt-5" in lm:
         return bool(os.environ.get("OPENAI_API_KEY")), "export OPENAI_API_KEY"
-    return bool(
+    # Unknown provider: accept any common key being present.
+    any_key = bool(
         os.environ.get("OPENAI_API_KEY") or has_aws
-    ), "export the configured provider credentials"
+    )
+    return any_key, "export your LiteLLM provider's API key"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="gepa",
+                    choices=["gepa", "best_of_n", "autoresearch", "meta_harness"])
+    ap.add_argument("--test-lm", action="store_true",
+                    help="make a 1-call round-trip to the reflection LM (costs a few tokens)")
+    a = ap.parse_args()
+
+    print("== optimize_anything preflight ==")
+
+    # 1) import + the correct API surface
+    try:
+        import gepa  # noqa
+        from gepa.optimize_anything import OptimizeAnythingConfig, optimize_anything  # noqa
+        check(f"import gepa ({getattr(gepa, '__version__', '?')}) + optimize_anything", True)
+    except Exception as e:  # noqa
+        check("import gepa + optimize_anything", False, "pip install 'gepa[full]'")
+        print(f"      {e}")
+        return _report()
+
+    # 2) LM credentials (in-process engines that call an LLM directly)
+    lm = os.environ.get("GEPA_REFLECTION_LM", "")
+    if a.engine in ("gepa", "best_of_n"):
+        effective_lm = lm or DEFAULT_LM_BY_ENGINE[a.engine]
+        if not lm:
+            print(f"      GEPA_REFLECTION_LM unset -> engine default '{effective_lm}'")
+        ok, fix = _creds_for(effective_lm)
+        check(f"LLM creds present for '{effective_lm}'", ok, fix)
+
+    # 3) agentic engines use the skill-owned Codex adapter (autoresearch also uses jq)
+    if a.engine in ("autoresearch", "meta_harness"):
+        configured_codex = os.environ.get("CODEX_BIN")
+        cli = shutil.which(configured_codex or "codex")
+        check(f"`codex` CLI on PATH (required by the skill adapter for {a.engine})", bool(cli),
+              "install + authenticate the Codex CLI, or set CODEX_BIN")
+        if cli:
+            print(f"      codex -> {cli}")
+        if a.engine == "autoresearch":
+            check("`jq` on PATH (used by the generated eval.sh)", bool(shutil.which("jq")),
+                  "install jq")
+        check("Codex bridge entrypoint is present",
+              os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "bin", "gepa-agent")),
+              "restore the skill's bin/gepa-agent adapter")
+
+    # 4) optional live LM round-trip
+    if a.test_lm and a.engine in ("gepa", "best_of_n"):
+        target = lm or DEFAULT_LM_BY_ENGINE[a.engine]
+        try:
+            from gepa.lm import LM
+            out = LM(target)("Reply with the single word: ok")
+            check(f"LM 1-call round-trip ({target})", bool(out),
+                  "LM returned empty; check model id / creds / region")
+        except Exception as e:  # noqa
+            check(f"LM 1-call round-trip ({target})", False, str(e)[:160])
+
+    return _report()
 
 
 def _report() -> int:
     print()
     if problems:
         print(f"\033[31m{len(problems)} blocker(s):\033[0m")
-        for problem in problems:
-            print(f"  - {problem}")
+        for p in problems:
+            print(f"  - {p}")
         return 1
     print("\033[32mAll preflight checks passed.\033[0m")
     return 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--engine",
-        default="gepa",
-        choices=["gepa", "best_of_n", "autoresearch", "meta_harness"],
-    )
-    parser.add_argument(
-        "--test-lm", action="store_true", help="make one live reflection-LM call"
-    )
-    args = parser.parse_args()
-    print("== optimize_anything Codex preflight ==")
-
-    try:
-        import gepa
-        from gepa.optimize_anything import (  # noqa: F401
-            OptimizeAnythingConfig,
-            optimize_anything,
-        )
-
-        codex_runtime.install()
-
-        check(
-            f"import gepa ({getattr(gepa, '__version__', '?')}) + optimize_anything",
-            True,
-        )
-        default_config = OptimizeAnythingConfig()
-        check(
-            "GEPA default sandbox flag is disabled",
-            getattr(default_config, "sandbox", None) is False,
-            "install the pinned pre-confinement GEPA revision",
-        )
-        from gepa.strategies.proposal_sampling import PxNSampling
-        from gepa.strategies.proposal_selection import AllImprovements
-
-        engine_options = default_config.engine_config.get("engine", {})
-        sampling = engine_options.get("sampling_strategy")
-        selection = engine_options.get("selection_strategy")
-        check("PxNSampling is available", isinstance(sampling, PxNSampling))
-        check("AllImprovements is available", isinstance(selection, AllImprovements))
-        check(
-            "default proposal width is PxNSampling(p=2, n=2)",
-            isinstance(sampling, PxNSampling)
-            and sampling.p == codex_runtime.DEFAULT_PARENT_COUNT
-            and sampling.n == codex_runtime.DEFAULT_MUTATION_COUNT,
-            "use the pinned GEPA revision and reapply the Codex runtime",
-        )
-    except Exception as exc:  # noqa: BLE001 - preflight must report import failures
-        check(
-            "import gepa + optimize_anything",
-            False,
-            "install the pinned 'gepa[full]' dependency",
-        )
-        print(f"      {exc}")
-        return _report()
-
-    try:
-        import gepa.oa.sandbox as runtime_module
-
-        check(
-            "Codex runtime bridge installed",
-            runtime_module.GEPA_SKILL_CODEX_RUNTIME == RUNTIME_MARKER,
-        )
-    except Exception as exc:  # noqa: BLE001 - preflight must report bridge failures
-        check("Codex runtime bridge installed", False, str(exc))
-
-    if args.engine in ("gepa", "best_of_n"):
-        model = (
-            os.environ.get("GEPA_REFLECTION_LM") or DEFAULT_LM_BY_ENGINE[args.engine]
-        )
-        ok, fix = _creds_for(model)
-        check(f"LLM credentials present for '{model}'", ok, fix)
-
-    if args.engine in ("autoresearch", "meta_harness"):
-        try:
-            executable = codex_runtime.codex_path()
-            check(f"Codex executable available ({executable})", True)
-        except RuntimeError as exc:
-            check("Codex executable available", False, str(exc))
-        check(
-            "bundled Codex entrypoint exists",
-            codex_runtime.shim_path().is_file(),
-            str(codex_runtime.shim_path()),
-        )
-        if args.engine == "autoresearch":
-            check(
-                "jq is available for eval.sh",
-                shutil.which("jq") is not None,
-                "install jq",
-            )
-
-    if args.test_lm and args.engine in ("gepa", "best_of_n"):
-        target = (
-            os.environ.get("GEPA_REFLECTION_LM") or DEFAULT_LM_BY_ENGINE[args.engine]
-        )
-        try:
-            from gepa.lm import LM
-
-            check(
-                f"reflection LM round-trip ({target})",
-                bool(LM(target)("Reply with the single word: ok")),
-            )
-        except Exception as exc:  # noqa: BLE001 - live provider errors are diagnostics
-            check(f"reflection LM round-trip ({target})", False, str(exc)[:160])
-    return _report()
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
