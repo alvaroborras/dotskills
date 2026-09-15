@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi.local/autoresearch/metric-contract.schema.json",
+  "title": "Autoresearch metric contract",
+  "type": "object",
+  "required": ["name", "unit", "direction", "aggregation", "denominator", "verifier", "parser", "suite", "backend", "environment", "comparator", "minimum_improvement", "noise_policy", "constraints", "evidence_stages", "sealed_policy"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "unit": {"type": "string", "minLength": 1},
+    "direction": {"enum": ["higher", "lower"]},
+    "aggregation": {"type": ["string", "object"]},
+    "denominator": {"type": "number", "exclusiveMinimum": 0},
+    "verifier": {"type": "object"},
+    "parser": {"type": "object"},
+    "suite": {"type": "object"},
+    "backend": {"type": ["string", "object"]},
+    "environment": {"type": "object"},
+    "comparator": {"type": "object"},
+    "minimum_improvement": {"type": "object"},
+    "noise_policy": {"type": "object"},
+    "constraints": {"type": "object"},
+    "evidence_stages": {
+      "type": "array",
+      "items": {"enum": ["smoke", "screen", "independent", "canonical", "promotion-audit"]},
+      "uniqueItems": true,
+      "minItems": 5
+    },
+    "sealed_policy": {"type": "object"}
+  },
+  "additionalProperties": true
+}

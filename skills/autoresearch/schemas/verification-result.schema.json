@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi.local/autoresearch/verification-result.schema.json",
+  "title": "Typed autoresearch verification result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "outcome",
+    "run_id",
+    "candidate_id",
+    "metric_contract_id",
+    "stage",
+    "suite",
+    "backend",
+    "harness_hash",
+    "input_hash",
+    "environment_hash",
+    "concurrency_policy",
+    "source_hash",
+    "coverage",
+    "guards",
+    "constraints"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "outcome": {
+      "enum": [
+        "valid",
+        "build_error",
+        "crash",
+        "cpu_timeout",
+        "wall_timeout",
+        "parse_error",
+        "checker_rejection",
+        "infrastructure_error",
+        "cancelled",
+        "stale"
+      ]
+    },
+    "metric": {"type": "number"},
+    "run_id": {"type": "string", "minLength": 1},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "metric_contract_id": {"type": "string", "minLength": 1},
+    "stage": {"enum": ["smoke", "screen", "independent", "canonical", "promotion-audit"]},
+    "suite": {"type": "string", "minLength": 1},
+    "backend": {"type": "string", "minLength": 1},
+    "harness_hash": {"type": "string", "minLength": 1},
+    "input_hash": {"type": "string", "minLength": 1},
+    "environment_hash": {"type": "string", "minLength": 1},
+    "concurrency_policy": {"type": "string", "minLength": 1},
+    "source_hash": {"type": "string", "minLength": 1},
+    "resource_key": {"type": "string", "minLength": 1},
+    "coverage": {
+      "type": "object",
+      "required": ["expected", "observed", "duplicate_count"],
+      "properties": {
+        "expected": {"type": "integer", "minimum": 0},
+        "observed": {"type": "integer", "minimum": 0},
+        "duplicate_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "guards": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {"passed": {"type": "boolean"}}
+    },
+    "constraints": {
+      "type": "object",
+      "required": ["passed"],
+      "properties": {"passed": {"type": "boolean"}}
+    },
+    "artifacts": {"type": "array", "items": {"type": "string"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"outcome": {"const": "valid"}}, "required": ["outcome"]},
+      "then": {"required": ["metric"]},
+      "else": {"not": {"required": ["metric"]}}
+    }
+  ],
+  "additionalProperties": true
+}
