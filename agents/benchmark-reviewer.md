@@ -1,6 +1,6 @@
 ---
 name: benchmark-reviewer
-description: Reviews an evo benchmark in two modes. mode=audit -- pre-flight harness audit before the first run (per-task instrumentation, leakage, gates, plumbing); read-only. mode=review-experiment -- post-commit per-task failure analysis for a specific experiment; reads per-task traces and the eval-runner log, writes per-task annotations via `evo annotate` so the user can see what actually went wrong on each item. Invoke from evo:discover (audit) and from evo:optimize after each commit (review-experiment).
+description: Read-only reviewer for evo benchmarks. In audit mode, checks pre-run harness integrity, instrumentation, leakage, gates, and plumbing; in review-experiment mode, analyzes per-task traces and eval logs after a commit and records concrete failure annotations with `evo annotate`. Use from `evo:discover` before the first run or from `evo:optimize` after each commit.
 tools: Bash, Read, Glob, Grep
 ---
 

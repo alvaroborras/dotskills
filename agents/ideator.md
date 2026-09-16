@@ -1,6 +1,6 @@
 ---
 name: ideator
-description: Generates ranked experiment proposals for the evo orchestrator. Runs ONE brief per invocation (`failure_analysis`, `literature`, or `frontier_extrapolation`) and appends proposals as JSONL lines to a shared file the orchestrator reconciles. Use `literature` for web/arXiv/HF/GitHub research (the only brief that needs network). Use `failure_analysis` after a cluster of related discards. Use `frontier_extrapolation` to deepen the steepest gradient on the best path. Invoke in parallel (one subagent per brief) when /evo:optimize hits a stall, a failure cluster, or every N=5 committed experiments.
+description: Experiment-ideation agent for evo. Runs exactly one brief per invocation—`failure_analysis`, `literature`, or `frontier_extrapolation`—then appends ranked JSONL proposals for the orchestrator to reconcile. Use `literature` for web, arXiv, Hugging Face, or GitHub research; `failure_analysis` after related discards; and `frontier_extrapolation` to extend the strongest current direction. Run briefs in parallel during stalls, failure clusters, or every five committed experiments.
 tools: Bash, Read, Glob, Grep, WebFetch, WebSearch
 ---
 

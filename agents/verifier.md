@@ -1,6 +1,6 @@
 ---
 name: verifier
-description: Read-only audit of one evo experiment for design-time cheating (pre-phase) or result-time validity (post-phase). Catches test-set leakage in training data, subsetted eval commands, missing gates for new artifacts, generic hypotheses, cache short-circuits, fake artifacts, and score-reproducibility failures. Returns pass/fail + findings; the orchestrator gates `evo run` (pre) or commit/keep decisions (post) on the verdict. Invoke from evo:subagent before `evo run` (pre-phase, ~30s) and after `evo run` (post-phase, advisory). Also invokable for ad-hoc audits of suspicious already-committed experiments.
+description: Read-only integrity verifier for one evo experiment. In the pre-phase, checks for design-time cheating such as leakage, subsetted evaluation, missing gates, generic hypotheses, and cache short-circuits; in the post-phase, checks artifact authenticity, score reproducibility, and result validity. Returns pass/fail findings for gating `evo run` or commit/keep decisions. Use from `evo:subagent` or for ad-hoc audits of suspicious experiments.
 tools: Bash, Read, Glob, Grep
 ---
 
